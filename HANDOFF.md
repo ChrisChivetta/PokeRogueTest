@@ -4,10 +4,21 @@ This was started in a local session that couldn't run the game (no PokéRogue ac
 that laptop, no Chrome extension connected). Continuing in a **cloud session on this repo**,
 on a laptop that has the game + the Claude-in-Chrome extension connected.
 
+## Reference docs (full context, in `docs/`)
+
+- `docs/PLAN.md` — the complete approved implementation plan (architecture, phases, risk,
+  verification). This is the authoritative spec.
+- `docs/research-automation-tooling.md` — how existing bots work + the exact game interface
+  (CanvasPool walk, BattleScene accessors, `ui.processInput`). Background for `bridge.ts`.
+- `docs/research-classic-ribbon-mechanics.md` — source-verified Classic/ribbon mechanics
+  (all-party ribbon award, final-party semantics, wave structure, starter cost).
+- `docs/research-strategy.md` — carry tier list, the carry-and-swap loop, reward priority,
+  unattended-reliability rules, and pseudocode. Feeds Phases 2–3 (`src/carries.ts`, policy).
+
 ## Where we are: Phase 0 built, NOT yet live-verified
 
 The plan is a 5-phase, MVP-first build of an unattended Classic-mode bot that ribbons every
-starter. Full rationale + mechanics are in `README.md`. Roadmap below.
+starter. Full rationale + mechanics are in `README.md` and `docs/PLAN.md`. Roadmap below.
 
 **Done (committed + pushed):**
 - Userscript build: `npm run build` → `dist/pokerogue-auto-ribbon.user.js` (esbuild, single
