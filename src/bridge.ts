@@ -109,9 +109,12 @@ export function isSceneReady(): boolean {
 }
 
 // ── Enum resolution ──────────────────────────────────────────────────────────
-// UiMode has ~44 implicitly-numbered members, so its numeric values are NOT stable
-// across versions. We therefore resolve modes by NAME wherever the game gives us a
-// named handle, and only fall back to baked-in numbers as a last resort.
+// UiMode is an implicit (auto-numbered) enum. Its numbers CAN shift across versions
+// when upstream inserts a member, but for any single build the number is exact and —
+// crucially — readable on the minified pokerogue.net bundle, where class names are
+// mangled and so handler-name matching is useless. We therefore resolve modes by
+// NUMBER (against a source-accurate order table) as the primary signal, and use the
+// handler's class name only as a corroborating cross-check that flags version drift.
 //
 // Button is small (0..17) and stable; we bake it but expose a resolver for symmetry.
 
@@ -130,36 +133,77 @@ export const Button = {
 export type ButtonName = keyof typeof Button;
 
 /**
- * Names of the UiMode members we care about. We map the scene's *current* numeric
- * mode back to one of these names by reading the game's own UiMode enum object if it
- * is reachable, so we never depend on a hardcoded number matching the live build.
+ * Authoritative UiMode order, copied verbatim from `src/enums/ui-mode.ts` @ main.
+ * The index of each name IS its numeric enum value: UiMode is auto-numbered and the
+ * game builds `ui.handlers` in this exact order, so `ui.getMode()` returns an index
+ * into this list. Resolving by number therefore works on the minified pokerogue.net
+ * build too (unlike class-name matching). Re-verify against upstream on major patches;
+ * `modeProbe()` flags drift empirically from a live screen.
+ *
+ * NOTE: there is intentionally no GAME_OVER member — game-over is a *phase*, not a UI
+ * mode, and renders through the message handler.
  */
-export const UI_MODE_NAMES = [
-  "MESSAGE",
-  "TITLE",
-  "COMMAND",
-  "FIGHT",
-  "BALL",
-  "TARGET_SELECT",
-  "MODIFIER_SELECT",
-  "PARTY",
-  "SUMMARY",
-  "STARTER_SELECT",
-  "CONFIRM",
-  "OPTION_SELECT",
-  "MENU",
-  "SAVE_SLOT",
-  "GAME_OVER",
+export const UI_MODE_ORDER = [
+  "MESSAGE", // 0
+  "TITLE", // 1
+  "COMMAND", // 2
+  "FIGHT", // 3
+  "BALL", // 4
+  "TARGET_SELECT", // 5
+  "MODIFIER_SELECT", // 6
+  "SAVE_SLOT", // 7
+  "PARTY", // 8
+  "SUMMARY", // 9
+  "STARTER_SELECT", // 10
+  "EVOLUTION_SCENE", // 11
+  "EGG_HATCH_SCENE", // 12
+  "EGG_HATCH_SUMMARY", // 13
+  "CONFIRM", // 14
+  "OPTION_SELECT", // 15
+  "MENU", // 16
+  "MENU_OPTION_SELECT", // 17
+  "SETTINGS", // 18
+  "SETTINGS_DISPLAY", // 19
+  "SETTINGS_AUDIO", // 20
+  "SETTINGS_GAMEPAD", // 21
+  "GAMEPAD_BINDING", // 22
+  "SETTINGS_KEYBOARD", // 23
+  "KEYBOARD_BINDING", // 24
+  "ACHIEVEMENTS", // 25
+  "GAME_STATS", // 26
+  "EGG_LIST", // 27
+  "EGG_GACHA", // 28
+  "POKEDEX", // 29
+  "POKEDEX_SCAN", // 30
+  "POKEDEX_PAGE", // 31
+  "LOGIN_OR_REGISTER", // 32
+  "LOGIN_FORM", // 33
+  "REGISTRATION_FORM", // 34
+  "LOADING", // 35
+  "SESSION_RELOAD", // 36
+  "UNAVAILABLE", // 37
+  "CHALLENGE_SELECT", // 38
+  "RENAME_POKEMON", // 39
+  "RENAME_RUN", // 40
+  "RUN_HISTORY", // 41
+  "RUN_INFO", // 42
+  "TEST_DIALOGUE", // 43
+  "AUTO_COMPLETE", // 44
+  "ADMIN", // 45
+  "MYSTERY_ENCOUNTER", // 46
+  "CHANGE_PASSWORD_FORM", // 47
 ] as const;
-export type UiModeName = (typeof UI_MODE_NAMES)[number] | "UNKNOWN";
+export type UiModeName = (typeof UI_MODE_ORDER)[number] | "UNKNOWN";
 
 /**
- * Map the ACTIVE HANDLER's class name → our UiModeName. This is the primary, most
- * robust signal: the game indexes `ui.handlers[mode]` by mode, and each is a distinctly
- * named class. Far more stable than guessing the enum's implicit numeric values.
+ * Map the ACTIVE HANDLER's class name → our UiModeName. This is a CORROBORATING signal
+ * only: it works on unminified/dev builds (where class names survive) and is used to
+ * cross-check the numeric resolver and surface version drift. On the minified
+ * pokerogue.net bundle these names are mangled, so this map simply yields nothing and
+ * the numeric resolver carries the load.
  *
- * Caveat: production builds may minify class names. We therefore ALSO keep the enum
- * translation as a fallback, and accept handler-name matching only on a recognized name.
+ * `OptionSelectUiHandler` backs both OPTION_SELECT and MENU_OPTION_SELECT, so a number↔
+ * name disagreement between those two is an expected alias, not drift (see isModeAlias).
  */
 const HANDLER_NAME_TO_MODE: Record<string, UiModeName> = {
   CommandUiHandler: "COMMAND",
@@ -177,48 +221,50 @@ const HANDLER_NAME_TO_MODE: Record<string, UiModeName> = {
   OptionSelectUiHandler: "OPTION_SELECT",
   MenuUiHandler: "MENU",
   SaveSlotSelectUiHandler: "SAVE_SLOT",
-  GameOverUiHandler: "GAME_OVER",
+  MysteryEncounterUiHandler: "MYSTERY_ENCOUNTER",
 };
 
-/**
- * Try to obtain the game's UiMode enum object (name→value map) to translate a numeric
- * mode into a name. Best-effort fallback; returns null if not reachable.
- */
-function getUiModeEnum(): Record<string, number> | null {
-  const ui = getScene()?.ui;
-  if (!ui) return null;
-  const candidate =
-    (ui.constructor as any)?.UiMode ?? (ui as any).UiMode ?? (globalThis as any).UiMode;
-  return candidate && typeof candidate === "object" ? candidate : null;
+/** OPTION_SELECT and MENU_OPTION_SELECT share one handler class — treat as equivalent. */
+function isModeAlias(a: UiModeName, b: UiModeName): boolean {
+  const set = new Set([a, b]);
+  return set.has("OPTION_SELECT") && set.has("MENU_OPTION_SELECT");
 }
 
 /**
- * Current UI mode as a stable NAME. Strategy, most→least robust:
- *   1. Match the active handler's constructor name (survives enum renumbering).
- *   2. Translate ui.getMode() via the game's UiMode enum object, if reachable.
- *   3. Give up → "UNKNOWN" (logged with the raw number). Callers treat UNKNOWN as
- *      "don't act" — the policy pauses on unrecognized modes rather than guessing.
+ * Current UI mode as a stable NAME. Strategy:
+ *   1. PRIMARY — `ui.getMode()` indexed into the source-accurate UI_MODE_ORDER. Works on
+ *      the minified live build; this is what carries the load on pokerogue.net.
+ *   2. CROSS-CHECK — the handler's class name (dev/unminified only). If it disagrees with
+ *      the numeric result (and isn't the OptionSelect alias), log a drift warning so we
+ *      know UI_MODE_ORDER has gone stale vs the running build. We still trust the number,
+ *      since on the real target the name is mangled and the number is exact.
+ *   3. FALLBACK — if the number is unreadable/out of range, use the handler name if we
+ *      have one; otherwise "UNKNOWN" (logged). Callers treat UNKNOWN as "don't act".
  */
 export function getUiModeName(): UiModeName {
-  // 1) Handler class name.
-  const handler = getScene()?.ui?.getHandler?.();
-  const ctorName: string | undefined = handler?.constructor?.name;
-  if (ctorName && HANDLER_NAME_TO_MODE[ctorName]) return HANDLER_NAME_TO_MODE[ctorName];
+  const modeNum = getUiModeNumber();
+  const byNumber =
+    modeNum != null && modeNum >= 0 && modeNum < UI_MODE_ORDER.length
+      ? UI_MODE_ORDER[modeNum]
+      : undefined;
 
-  // 2) Enum translation.
-  const modeNum: number | undefined = getScene()?.ui?.getMode?.();
-  if (typeof modeNum !== "number") return "UNKNOWN";
-  const enumObj = getUiModeEnum();
-  if (enumObj) {
-    for (const name of UI_MODE_NAMES) {
-      if (enumObj[name] === modeNum) return name;
+  const ctorName: string | undefined = getActiveHandler()?.constructor?.name;
+  const byHandler = ctorName ? HANDLER_NAME_TO_MODE[ctorName] : undefined;
+
+  if (byNumber) {
+    if (byHandler && byHandler !== byNumber && !isModeAlias(byNumber, byHandler)) {
+      log.warn(
+        `[bridge] UI mode drift: getMode()=${modeNum} → "${byNumber}", but handler ` +
+          `"${ctorName}" → "${byHandler}". If the live screen is "${byHandler}", ` +
+          `UI_MODE_ORDER is stale for this build — run autoRibbon.modeProbe() to re-map.`,
+      );
     }
+    return byNumber;
   }
 
-  // 3) Unclassifiable — surface the number for the operator, refuse to guess.
-  log.debug(
-    `[bridge] unclassified UI mode: getMode()=${modeNum}, handler=${ctorName ?? "?"}`,
-  );
+  if (byHandler) return byHandler;
+
+  log.debug(`[bridge] unclassified UI mode: getMode()=${modeNum}, handler=${ctorName ?? "?"}`);
   return "UNKNOWN";
 }
 
@@ -236,4 +282,94 @@ export function getActiveHandler(): any | null {
 /** Reset the cached scene. Call if the bridge starts returning stale/dead handles. */
 export function resetBridge(): void {
   cached = null;
+}
+
+// ── Live diagnostics ─────────────────────────────────────────────────────────
+// These exist so the first live session can verify (and, if needed, repair) the two
+// version-fragile assumptions in this file — scene acquisition and UI-mode mapping —
+// from a single console call per concern, instead of the handoff's "log raw numbers
+// per screen" loop. Read-only; safe to call anytime.
+
+export interface SceneProbe {
+  found: boolean;
+  /** Which acquisition strategy yielded scenes (see findSceneArray). */
+  via: "phaser-canvaspool" | "canvas-backref" | "window-game" | "none";
+  phaserGlobalPresent: boolean;
+  canvasPoolLen: number;
+  canvasCount: number;
+  sceneCount: number;
+  /** Constructor names of every Phaser scene found (mangled on prod, but counts/shape help). */
+  sceneCtors: string[];
+  /** Does the acquired scene expose the battle-shaped accessors we depend on? */
+  battleShaped: boolean;
+}
+
+/** Report how (and whether) the live BattleScene is reachable, and by which path. */
+export function sceneProbe(): SceneProbe {
+  const Phaser: PhaserLike | undefined = (globalThis as any).Phaser;
+  const pool = Phaser?.Display?.Canvas?.CanvasPool?.pool;
+  const canvasPoolLen = Array.isArray(pool) ? pool.length : 0;
+  const canvases =
+    typeof document !== "undefined" ? Array.from(document.querySelectorAll("canvas")) : [];
+
+  let via: SceneProbe["via"] = "none";
+  if (canvasPoolLen > 0) via = "phaser-canvaspool";
+  else if (canvases.some((c) => (c as any).__phaserGame ?? (c as any).game ?? (c as any)._phaser?.game))
+    via = "canvas-backref";
+  else if ((globalThis as any).game?.scene?.scenes ?? (globalThis as any).gameInstance?.scene?.scenes)
+    via = "window-game";
+
+  const scenes = findSceneArray();
+  const scene = getScene();
+  return {
+    found: scene !== null,
+    via,
+    phaserGlobalPresent: !!Phaser,
+    canvasPoolLen,
+    canvasCount: canvases.length,
+    sceneCount: scenes.length,
+    sceneCtors: scenes.map((s) => s?.constructor?.name ?? "?"),
+    battleShaped: looksLikeBattleScene(scene),
+  };
+}
+
+export interface HandlerProbe {
+  index: number;
+  /** Expected name from UI_MODE_ORDER (source-accurate). */
+  expected: UiModeName | "(out of range)";
+  /** Live class name — mangled on prod, real in dev. */
+  ctor: string;
+  /** A few own-property keys — preserved by esbuild even when class names are mangled,
+   *  so these fingerprint a handler (e.g. FIGHT vs MODIFIER_SELECT) on the live build. */
+  ownKeys: string[];
+}
+
+export interface ModeProbe {
+  currentNumber: number | null;
+  currentResolved: UiModeName;
+  currentHandlerCtor: string | null;
+  handlerCount: number;
+  handlers: HandlerProbe[];
+}
+
+/**
+ * Dump the full `ui.handlers` array with each entry's index, expected name, live class
+ * name, and own-property fingerprint. One call confirms whether UI_MODE_ORDER matches
+ * the running build — and gives the fingerprints to fix it if not.
+ */
+export function modeProbe(): ModeProbe {
+  const ui = getScene()?.ui;
+  const handlers: any[] = Array.isArray(ui?.handlers) ? ui.handlers : [];
+  return {
+    currentNumber: getUiModeNumber(),
+    currentResolved: getUiModeName(),
+    currentHandlerCtor: getActiveHandler()?.constructor?.name ?? null,
+    handlerCount: handlers.length,
+    handlers: handlers.map((h, index) => ({
+      index,
+      expected: index < UI_MODE_ORDER.length ? UI_MODE_ORDER[index] : "(out of range)",
+      ctor: h?.constructor?.name ?? "?",
+      ownKeys: h ? Object.keys(h).slice(0, 14) : [],
+    })),
+  };
 }

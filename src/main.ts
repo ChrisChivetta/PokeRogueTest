@@ -5,14 +5,16 @@
 // any input code exists.
 //
 // Exposes window.autoRibbon for manual control from the console:
-//   autoRibbon.snapshot()  → full state object, logged + returned
-//   autoRibbon.stop()      → kill-switch (sets enabled=false)
-//   autoRibbon.start()     → resume
-//   autoRibbon.config      → live tunables
+//   autoRibbon.snapshot()    → full state object, logged + returned
+//   autoRibbon.sceneProbe()  → how/whether the BattleScene was acquired (debug acquisition)
+//   autoRibbon.modeProbe()   → dump ui.handlers to verify/repair the UI-mode mapping
+//   autoRibbon.stop()        → kill-switch (sets enabled=false)
+//   autoRibbon.start()       → resume
+//   autoRibbon.config        → live tunables
 
 import { config } from "./config";
 import { log } from "./log";
-import { isSceneReady } from "./bridge";
+import { isSceneReady, sceneProbe, modeProbe, type SceneProbe, type ModeProbe } from "./bridge";
 import { readState, summarize, type GameSnapshot } from "./state";
 import { mountHud, updateHud } from "./hud";
 
@@ -63,6 +65,16 @@ const api = {
   },
   ready(): boolean {
     return isSceneReady();
+  },
+  sceneProbe(): SceneProbe {
+    const p = sceneProbe();
+    log.info("sceneProbe:", p);
+    return p;
+  },
+  modeProbe(): ModeProbe {
+    const p = modeProbe();
+    log.info("modeProbe:", p);
+    return p;
   },
 };
 
