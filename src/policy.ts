@@ -52,7 +52,11 @@ export async function step(s: GameSnapshot): Promise<void> {
       return;
 
     case "MODIFIER_SELECT":
+      // CANCEL opens an "Are you sure you want to skip?" confirm; ACTION accepts it
+      // (→ next wave). If the screen wasn't ready for CANCEL, the ACTION instead takes
+      // the highlighted reward — which also advances. Either way we move on.
       await press(Button.CANCEL, "reward:skip");
+      await press(Button.ACTION, "reward:confirm-skip");
       return;
 
     case "CONFIRM":
