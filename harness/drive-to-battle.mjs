@@ -56,26 +56,31 @@ const press = (btn) => page.evaluate(PRESS, btn);
 const shot = (n) => page.screenshot({ path: join(OUT, n) }).catch(() => {});
 
 const seq = [];
-let reached = false, lastMode = "";
+let reached = false, lastMode = "", startedRun = false;
+const note = (s, step, extra = "") => { const m = s?.uiMode ?? "?"; if (m !== lastMode) { seq.push(`step ${step}: mode=${m} wave=${s?.battle?.waveIndex ?? null} ${extra}`); lastMode = m; } };
+
 for (let step = 0; step < 80; step++) {
   const s = await snap();
   const mode = s?.uiMode ?? "?";
-  const wave = s?.battle?.waveIndex ?? null;
-  if (mode !== lastMode) { seq.push(`step ${step}: mode=${mode} wave=${wave} await=${s?.awaitingActionInput}`); lastMode = mode; }
+  note(s, step);
 
   // Reached a battle command menu → done.
   if ((mode === "COMMAND" || mode === "FIGHT") && s?.battle) { reached = true; await shot(`reached-${mode}.png`); break; }
 
-  let btn = B.ACTION;
-  if (mode === "STARTER_SELECT") {
-    // Add the cursored starter, then submit to start the run.
-    await press(B.ACTION); await page.waitForTimeout(700);
-    await shot(`starter-after-add-${step}.png`);
-    btn = B.SUBMIT;
-  } else if (mode === "TARGET_SELECT" || mode === "MENU") {
-    btn = B.ACTION;
+  if (mode === "STARTER_SELECT" && !startedRun) {
+    // Explicit start sequence: open starter menu → "Add to Party" → start → confirm.
+    await press(B.ACTION); await page.waitForTimeout(600);   // open context menu (→ OPTION_SELECT)
+    await press(B.ACTION); await page.waitForTimeout(600);   // confirm "Add to Party"
+    await shot(`starter-added-${step}.png`);
+    await press(B.SUBMIT); await page.waitForTimeout(900);   // tryStart → confirm dialog
+    await press(B.ACTION); await page.waitForTimeout(900);   // confirm "Begin?"
+    await shot(`after-start-${step}.png`);
+    startedRun = true;
+    continue;
   }
-  await press(btn);
+
+  // Default: ACTION advances dialogue/title/menus/confirms.
+  await press(B.ACTION);
   await page.waitForTimeout(650);
   if (step % 6 === 0) await shot(`step-${String(step).padStart(2, "0")}-${mode}.png`);
 }
