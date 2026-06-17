@@ -25,16 +25,48 @@ const PRESS = (btn) => {
   return "no-scene";
 };
 
-const browser = await chromium.launch({ headless: true, args: ["--use-gl=angle","--use-angle=swiftshader","--enable-unsafe-swiftshader","--ignore-gpu-blocklist","--no-sandbox"] });
+const HEADLESS = process.env.HEADED !== "1";
+const browser = await chromium.launch({
+  headless: HEADLESS,
+  args: [
+    "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader",
+    "--ignore-gpu-blocklist", "--no-sandbox",
+    // #2: stop Chrome from throttling timers / pausing rAF on "hidden"/backgrounded
+    // pages — the prime suspect for Phaser's message timers freezing the game loop.
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling",
+  ],
+});
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const errors = [];
 page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.stack || e.message}`));
 page.on("console", (m) => { if (m.type() === "error") errors.push(`CONSOLE.error: ${m.text()}`); });
 
+// #1: trap errors as early as possible (before page scripts load), in case Phaser
+// swallows them or they fire from timer callbacks the page listeners miss.
+await page.addInitScript(`
+  window.__errs = [];
+  window.addEventListener("error", (e) => window.__errs.push("ERROR: " + (e.error?.stack || e.message)));
+  window.addEventListener("unhandledrejection", (e) => window.__errs.push("REJECT: " + (e.reason?.stack || e.reason)));
+`);
+
 await page.goto("http://localhost:8000", { waitUntil: "domcontentloaded", timeout: 60000 });
 
 const ready = () => page.evaluate(`(() => { const looks=(s)=>!!s&&typeof s.getPlayerParty==="function"&&!!s.ui&&typeof s.ui.getMode==="function"; const pool=globalThis.Phaser?.Display?.Canvas?.CanvasPool?.pool??[]; for(const e of pool){const ss=e?.parent?.game?.scene?.scenes; if(Array.isArray(ss)&&ss.find(looks))return true;} return false; })()`);
 const snap = () => page.evaluate(() => window.autoRibbon?.snapshot?.() ?? null);
+// Game-loop telemetry: current phase name, render FPS, and page visibility.
+const PHASE = () => page.evaluate(`(() => {
+  const looks=(s)=>!!s&&typeof s.getPlayerParty==="function"&&!!s.ui;
+  const pool=globalThis.Phaser?.Display?.Canvas?.CanvasPool?.pool??[];
+  for(const e of pool){const ss=e?.parent?.game?.scene?.scenes; if(Array.isArray(ss)){const m=ss.find(looks); if(m){
+    const ph=m.phaseManager?.getCurrentPhase?.()?.constructor?.name ?? "?";
+    const fps=Math.round(e.parent.game.loop?.actualFps ?? 0);
+    return { phase: ph, fps, vis: document.visibilityState };
+  }}}
+  return { phase:"?", fps:0, vis: document.visibilityState };
+})()`);
 const press = (b) => page.evaluate(PRESS, b);
 const shot = (n) => page.screenshot({ path: join(OUT, n) }).catch(() => {});
 const sleep = (ms) => page.waitForTimeout(ms);
@@ -90,9 +122,10 @@ while (Date.now() - tStart < RUN_BUDGET_MS) {
   const wave = s?.battle?.waveIndex ?? null;
   const mode = modeOf(s);
   const acts = await page.evaluate(() => window.autoRibbon.actions());
+  const tele = await PHASE();
   const lead = s?.playerParty?.find((p) => p.onField) ?? s?.playerParty?.[0];
   const foe = s?.enemyParty?.find((p) => p.onField) ?? s?.enemyParty?.[0];
-  samples.push(`t+${Math.round((Date.now() - tStart) / 1000)}s w${wave} ${mode} acts${acts} me ${lead?.name ?? "—"} ${lead?.hpRatio != null ? Math.round(lead.hpRatio * 100) + "%" : "?"} foe ${foe?.name ?? "—"} ${foe?.hpRatio != null ? Math.round(foe.hpRatio * 100) + "%" : "?"}`);
+  samples.push(`t+${Math.round((Date.now() - tStart) / 1000)}s w${wave} ${mode} ph=${tele.phase} fps=${tele.fps} vis=${tele.vis} acts${acts} me ${lead?.name ?? "—"} ${lead?.hpRatio != null ? Math.round(lead.hpRatio * 100) + "%" : "?"} foe ${foe?.name ?? "—"} ${foe?.hpRatio != null ? Math.round(foe.hpRatio * 100) + "%" : "?"}`);
 
   if (wave && wave !== lastWave) {
     progression.push(`wave ${wave} | me ${lead?.name ?? "—"} ${lead?.hpRatio != null ? Math.round(lead.hpRatio * 100) + "%" : "?"} | foe ${foe?.name ?? "—"} | acts ${acts}`);
@@ -112,7 +145,8 @@ while (Date.now() - tStart < RUN_BUDGET_MS) {
 await shot("zz-final.png");
 writeFileSync(join(OUT, "progression.txt"), progression.join("\n"));
 writeFileSync(join(OUT, "samples.txt"), samples.join("\n"));
-writeFileSync(join(OUT, "errors.txt"), errors.slice(-20).join("\n"));
+const trapped = await page.evaluate(() => window.__errs ?? []).catch(() => []);
+writeFileSync(join(OUT, "errors.txt"), [...errors, ...trapped.map((e) => "TRAP " + e)].slice(-30).join("\n"));
 console.log("=== BOT RUN RESULT ===");
 console.log("start:", startLog.join(" / "));
 console.log("result:", result, "| max wave:", maxWave);
