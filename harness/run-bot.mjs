@@ -89,7 +89,15 @@ const t0 = Date.now();
 while (Date.now() - t0 < 120000) { if (await ready()) break; await sleep(2000); }
 await page.addScriptTag({ content: BUNDLE });
 await sleep(1000);
-await page.evaluate(`(() => { const looks=(s)=>!!s&&typeof s.getPlayerParty==="function"&&!!s.ui; const pool=globalThis.Phaser?.Display?.Canvas?.CanvasPool?.pool??[]; for(const e of pool){const ss=e?.parent?.game?.scene?.scenes; if(Array.isArray(ss)){const m=ss.find(looks); if(m){ m.enableTutorials=false; m.disableMenu=false; return; }}} })()`);
+// Disable tutorials AND crank speed / kill animations. Headless SwiftShader renders
+// pokerogue's 1920x1080 + post-FX at only ~3-7 fps, so fewer rendered frames per turn
+// (no move anims, max game speed, skipped EXP, instant HP bars) is the difference
+// between progressing and crawling. Harness-only; the shipped bot never mutates these.
+await page.evaluate(`(() => { const looks=(s)=>!!s&&typeof s.getPlayerParty==="function"&&!!s.ui; const pool=globalThis.Phaser?.Display?.Canvas?.CanvasPool?.pool??[]; for(const e of pool){const ss=e?.parent?.game?.scene?.scenes; if(Array.isArray(ss)){const m=ss.find(looks); if(m){
+  m.enableTutorials=false; m.disableMenu=false;
+  m.gameSpeed=5; m.moveAnimations=false; m.expGainsSpeed=3; m.hpBarSpeed=3; m.fieldVolume=0;
+  return;
+}}} })()`);
 
 // ── Phase A: state-driven run start (retry add-starter until the Begin confirm shows) ──
 const startLog = [];
