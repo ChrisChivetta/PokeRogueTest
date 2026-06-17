@@ -141,9 +141,14 @@ while (Date.now() - tStart < RUN_BUDGET_MS) {
   const mode = modeOf(s);
   const acts = await page.evaluate(() => window.autoRibbon.actions());
   const tele = await PHASE();
+  let pdbg = "";
+  if (mode === "PARTY") {
+    const d = await page.evaluate(`(() => { const looks=(s)=>!!s&&typeof s.getPlayerParty==="function"&&!!s.ui; const pool=globalThis.Phaser?.Display?.Canvas?.CanvasPool?.pool??[]; for(const e of pool){const ss=e?.parent?.game?.scene?.scenes; if(Array.isArray(ss)){const m=ss.find(looks); if(m){ const h=m.ui.getHandler(); return { om:h?.optionsMode, opts:h?.options, oc:h?.optionsCursor, cur:h?.cursor, pum:h?.partyUiMode }; }}} return null; })()`).catch(() => null);
+    if (d) pdbg = ` PARTY{om:${d.om} opts:[${d.opts}] oc:${d.oc} cur:${d.cur} pum:${d.pum}}`;
+  }
   const lead = s?.playerParty?.find((p) => p.onField) ?? s?.playerParty?.[0];
   const foe = s?.enemyParty?.find((p) => p.onField) ?? s?.enemyParty?.[0];
-  samples.push(`t+${Math.round((Date.now() - tStart) / 1000)}s w${wave} ${mode} ph=${tele.phase} fps=${tele.fps} vis=${tele.vis} acts${acts} me ${lead?.name ?? "—"} ${lead?.hpRatio != null ? Math.round(lead.hpRatio * 100) + "%" : "?"} foe ${foe?.name ?? "—"} ${foe?.hpRatio != null ? Math.round(foe.hpRatio * 100) + "%" : "?"}`);
+  samples.push(`t+${Math.round((Date.now() - tStart) / 1000)}s w${wave} ${mode} ph=${tele.phase} fps=${tele.fps} vis=${tele.vis} acts${acts} me ${lead?.name ?? "—"} ${lead?.hpRatio != null ? Math.round(lead.hpRatio * 100) + "%" : "?"} foe ${foe?.name ?? "—"} ${foe?.hpRatio != null ? Math.round(foe.hpRatio * 100) + "%" : "?"}${pdbg}`);
 
   if (wave && wave !== lastWave) {
     progression.push(`wave ${wave} | me ${lead?.name ?? "—"} ${lead?.hpRatio != null ? Math.round(lead.hpRatio * 100) + "%" : "?"} | foe ${foe?.name ?? "—"} | acts ${acts}`);
