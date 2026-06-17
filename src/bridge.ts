@@ -133,6 +133,30 @@ export const Button = {
 export type ButtonName = keyof typeof Button;
 
 /**
+ * PokemonType enum → lowercase name (verbatim from `src/enums/pokemon-type.ts` @ main).
+ * Index = enum value (NORMAL=0 … STELLAR=18); UNKNOWN is -1. The game returns numeric
+ * types from `getTypes()` and `move.type`, so resolve them here into readable strings.
+ */
+export const TYPE_NAMES = [
+  "normal", "fighting", "flying", "poison", "ground", "rock", "bug", "ghost", "steel",
+  "fire", "water", "grass", "electric", "psychic", "ice", "dragon", "dark", "fairy", "stellar",
+] as const;
+
+/** Resolve a type value (enum number, string, or {name}) to a lowercase name, else null. */
+export function typeName(v: unknown): string | null {
+  if (typeof v === "number") {
+    if (v === -1) return "unknown";
+    return v >= 0 && v < TYPE_NAMES.length ? TYPE_NAMES[v] : null;
+  }
+  if (typeof v === "string") return v.length > 0 ? v.toLowerCase() : null;
+  if (v && typeof v === "object") {
+    const n = (v as any).name;
+    return typeof n === "string" && n.length > 0 ? n.toLowerCase() : null;
+  }
+  return null;
+}
+
+/**
  * Authoritative UiMode order, copied verbatim from `src/enums/ui-mode.ts` @ main.
  * The index of each name IS its numeric enum value: UiMode is auto-numbered and the
  * game builds `ui.handlers` in this exact order, so `ui.getMode()` returns an index

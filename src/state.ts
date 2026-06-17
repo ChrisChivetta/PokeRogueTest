@@ -5,7 +5,7 @@
 // what the whole policy layer consumes — nothing above this file touches raw game
 // objects, so version drift is contained to here + bridge.ts.
 
-import { getScene, getUiModeName, getUiModeNumber, type UiModeName, type RawScene } from "./bridge";
+import { getScene, getUiModeName, getUiModeNumber, typeName, type UiModeName, type RawScene } from "./bridge";
 
 export interface MoveSnapshot {
   name: string;
@@ -68,7 +68,8 @@ export interface GameSnapshot {
   battle: BattleSnapshot | null;
   playerParty: PokemonSnapshot[];
   enemyParty: PokemonSnapshot[];
-  biomeType: number | null;
+  /** Current biome as a BiomeId enum number (from arena.biomeId); null if unreadable. */
+  biomeId: number | null;
   money: number | null;
   /** Pokéball counts by ball-tier index, if readable. */
   pokeballCounts: number[] | null;
@@ -103,17 +104,16 @@ function readName(p: any): string {
   );
 }
 
-/** Lowercased type strings. The game exposes types via getTypes() or .type1/.type2. */
+/** Lowercased type strings. The game exposes types via getTypes() (PokemonType enum
+ *  numbers) or .type1/.type2. typeName() maps the numbers to readable names. */
 function readTypes(p: any): string[] {
   const viaGetter = tryCall<any[]>(p, "getTypes");
   const raw = Array.isArray(viaGetter) ? viaGetter : [p?.type1, p?.type2];
   const out: string[] = [];
   for (const t of raw) {
     if (t == null) continue;
-    // t may be an enum number, a string, or an object with a name.
-    const s =
-      typeof t === "string" ? t : str(t?.name) ?? (typeof t === "number" ? String(t) : null);
-    if (s) out.push(s.toLowerCase());
+    const s = typeName(t);
+    if (s && s !== "unknown") out.push(s);
   }
   return out;
 }
@@ -125,11 +125,7 @@ function readMoves(p: any): MoveSnapshot[] {
     if (!m) return;
     // A PokemonMove wraps the static move data, reachable via getMove() or .getMove.
     const md = tryCall<any>(m, "getMove") ?? m?.move ?? m;
-    const typeRaw = md?.type;
-    const type =
-      typeof typeRaw === "string"
-        ? typeRaw.toLowerCase()
-        : str(typeRaw?.name)?.toLowerCase() ?? (typeof typeRaw === "number" ? String(typeRaw) : null);
+    const type = typeName(md?.type);
     // Remaining PP: a PokemonMove tracks `ppUsed`; base PP lives on the move data
     // (`md.pp`) or as an explicit cap on the wrapper. Remaining = max - used.
     const ppMax = num(md?.pp) ?? num(m?.ppMax);
@@ -220,7 +216,7 @@ export function readState(): GameSnapshot {
       battle: null,
       playerParty: [],
       enemyParty: [],
-      biomeType: null,
+      biomeId: null,
       money: null,
       pokeballCounts: null,
     };
@@ -240,7 +236,7 @@ export function readState(): GameSnapshot {
     battle: readBattle(scene),
     playerParty: readParty(scene, "player"),
     enemyParty: readParty(scene, "enemy"),
-    biomeType: num(scene?.arena?.biomeType),
+    biomeId: num(scene?.arena?.biomeId) ?? num(scene?.arena?.biomeType),
     money: num(scene?.money),
     pokeballCounts,
   };
