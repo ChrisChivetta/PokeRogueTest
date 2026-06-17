@@ -28,7 +28,8 @@ const PRESS = (btn) => {
 const browser = await chromium.launch({ headless: true, args: ["--use-gl=angle","--use-angle=swiftshader","--enable-unsafe-swiftshader","--ignore-gpu-blocklist","--no-sandbox"] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 const errors = [];
-page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.message}`));
+page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.stack || e.message}`));
+page.on("console", (m) => { if (m.type() === "error") errors.push(`CONSOLE.error: ${m.text()}`); });
 
 await page.goto("http://localhost:8000", { waitUntil: "domcontentloaded", timeout: 60000 });
 
