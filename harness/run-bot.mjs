@@ -122,10 +122,10 @@ writeFileSync(join(OUT, "start-log.txt"), startLog.join("\n"));
 await page.evaluate(() => {
   const c = window.autoRibbon.config;
   c.dryRun = false; c.logLevel = "info";
-  // Harness-only fast pacing: the engine is CPU-capped ~10fps, so the human-pacing
-  // delays dominate wall-clock. The SHIPPED defaults stay human-paced (account safety);
-  // we only crank speed for local headless testing.
-  c.inputDelayMinMs = 60; c.inputDelayMaxMs = 160; c.tickIntervalMs = 200;
+  // NOTE: wall-clock per wave is fully game-loop-bound here (~85s/wave at the
+  // headless ~5fps), NOT pacing-bound — measured identical wave times at 4x faster
+  // pacing, just with wasted presses that steal CPU from rendering. So keep the
+  // shipped human pacing; cranking it does not help and slightly hurts fps.
   window.autoRibbon.start();
 });
 
