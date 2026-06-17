@@ -1,0 +1,16 @@
+{
+  "name": "pokerogue-auto-ribbon",
+  "version": "0.1.0",
+  "description": "Unattended PokéRogue Classic-mode bot that ribbons every starter in the fewest runs. Input-only, no save tampering.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "AGPL-3.0-only",
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  }
+}
