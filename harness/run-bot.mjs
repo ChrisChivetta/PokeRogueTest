@@ -119,7 +119,15 @@ await shot("00-wave1-start.png");
 writeFileSync(join(OUT, "start-log.txt"), startLog.join("\n"));
 
 // ── Phase B: hand control to the bot ──
-await page.evaluate(() => { window.autoRibbon.config.dryRun = false; window.autoRibbon.config.logLevel = "info"; window.autoRibbon.start(); });
+await page.evaluate(() => {
+  const c = window.autoRibbon.config;
+  c.dryRun = false; c.logLevel = "info";
+  // Harness-only fast pacing: the engine is CPU-capped ~10fps, so the human-pacing
+  // delays dominate wall-clock. The SHIPPED defaults stay human-paced (account safety);
+  // we only crank speed for local headless testing.
+  c.inputDelayMinMs = 60; c.inputDelayMaxMs = 160; c.tickIntervalMs = 200;
+  window.autoRibbon.start();
+});
 
 const progression = [], samples = [];
 let maxWave = atCmd?.battle?.waveIndex ?? 0, lastWave = maxWave, titleStreak = 0, idle = 0, result = "timeout";
