@@ -99,22 +99,28 @@ await page.evaluate(`(() => { const looks=(s)=>!!s&&typeof s.getPlayerParty==="f
   return;
 }}} })()`);
 
-// ── Phase A: state-driven run start (retry add-starter until the Begin confirm shows) ──
+// ── Phase A: state-driven run start — draft a 3-mon team (Bulbasaur/Charmander/Squirtle,
+//    cost 3 each = 9 ≤ 10) so faint-switch has fodder, then begin. ──
 const startLog = [];
 await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 70000, "→starter");
 startLog.push("reached STARTER_SELECT");
-let confirmed = null;
-for (let attempt = 0; attempt < 5 && !confirmed; attempt++) {
-  await driveUntil(B.ACTION, (s) => modeOf(s) === "OPTION_SELECT", 6000, "open-menu");
-  await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 6000, "add-to-party");
-  confirmed = await driveUntil(B.SUBMIT, (s) => modeOf(s) === "CONFIRM", 6000, "submit→confirm");
-  if (!confirmed) await press(B.CANCEL); // close any stray menu before retrying
+let added = 0;
+for (let k = 0; k < 3; k++) {
+  const opened = await driveUntil(B.ACTION, (s) => modeOf(s) === "OPTION_SELECT", 5000, "open-menu");
+  if (!opened) break;
+  await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 5000, "add-to-party"); // "Add to Party"
+  added++;
+  if (k < 2) { await press(B.RIGHT); await sleep(450); } // move cursor to the next starter
 }
-startLog.push(confirmed ? "starter added (confirm shown)" : "FAILED to add starter");
+startLog.push(`added ~${added} starters`);
+// Begin the run (retry once if the confirm doesn't show).
+let confirmed = await driveUntil(B.SUBMIT, (s) => modeOf(s) === "CONFIRM", 6000, "submit→confirm");
+if (!confirmed) { await press(B.CANCEL); confirmed = await driveUntil(B.SUBMIT, (s) => modeOf(s) === "CONFIRM", 6000, "retry-submit"); }
+startLog.push(confirmed ? "begin confirm shown" : "FAILED to reach confirm");
 await driveUntil(B.ACTION, (s) => !["CONFIRM", "STARTER_SELECT", "OPTION_SELECT"].includes(modeOf(s)), 8000, "confirm-begin");
 startLog.push("run starting");
 const atCmd = await driveUntil(B.ACTION, (s) => modeOf(s) === "COMMAND" && !!s?.battle, 60000, "→command");
-startLog.push(atCmd ? "reached COMMAND (wave " + atCmd.battle.waveIndex + ")" : "FAILED to reach COMMAND");
+startLog.push(atCmd ? "reached COMMAND (wave " + atCmd.battle.waveIndex + ", party " + atCmd.playerParty.length + ")" : "FAILED to reach COMMAND");
 await shot("00-wave1-start.png");
 writeFileSync(join(OUT, "start-log.txt"), startLog.join("\n"));
 

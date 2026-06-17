@@ -1,21 +1,21 @@
-// Battle policy (Phase 1) — minimal, safe, hands-off play through early waves.
+// Battle policy (Phase 1) — minimal, safe, hands-off play.
 //
-// One decision per call, driven by the current UI mode + snapshot. The guiding rule
-// learned from live runs: DON'T mash. Acting on every MESSAGE frame races the game's
-// phase/animation system into a stuck/crashed state. So we only advance dialogue when
-// the handler is genuinely waiting (awaitingActionInput), handle the few actionable
-// modes explicitly, and otherwise wait for the game to settle.
+// One decision per call, driven by the current UI mode + snapshot. Guiding rule from
+// live runs: DON'T mash. Acting on every MESSAGE frame races the phase/animation system
+// into a stuck state. So we only advance dialogue when the handler is genuinely waiting
+// (awaitingActionInput), handle actionable modes explicitly, and otherwise wait.
 //
 //   • COMMAND          → choose FIGHT
 //   • FIGHT            → best PP-aware, type-effective move
 //   • TARGET_SELECT    → default target
-//   • MODIFIER_SELECT  → skip the reward (CANCEL → onActionInput(-1,-1) → next wave)
-//   • CONFIRM / PARTY  → back out (decline learn-move prompts, etc.)
+//   • MODIFIER_SELECT  → take the highlighted reward (free items keep the run alive)
+//   • PARTY            → bring in / apply to a usable mon (faint-switch + reward target)
+//   • CONFIRM          → decline optional prompts (learn-move) to keep moveset stable
 //   • awaiting input   → advance dialogue
-//   • everything else  → wait (do nothing)
+//   • everything else  → wait
 
 import type { GameSnapshot } from "./state";
-import { Button } from "./bridge";
+import { Button, getActiveHandler } from "./bridge";
 import { press, moveCursor2x2 } from "./input";
 import { bestMoveIndex } from "./typechart";
 
@@ -25,8 +25,6 @@ const onField = (party: GameSnapshot["playerParty"]) => party.find((p) => p.onFi
 export async function step(s: GameSnapshot): Promise<void> {
   if (!s.ready) return;
 
-  // Actionable modes take priority over the generic dialogue-advance, so e.g. a
-  // MODIFIER_SELECT that is awaiting input is SKIPPED (CANCEL), not accepted (ACTION).
   switch (s.uiMode) {
     case "COMMAND": {
       const cur = s.cursor ?? 0;
@@ -52,29 +50,62 @@ export async function step(s: GameSnapshot): Promise<void> {
       return;
 
     case "MODIFIER_SELECT":
-      // CANCEL opens an "Are you sure you want to skip?" confirm; ACTION accepts it
-      // (→ next wave). If the screen wasn't ready for CANCEL, the ACTION instead takes
-      // the highlighted reward — which also advances. Either way we move on.
-      await press(Button.CANCEL, "reward:skip");
-      await press(Button.ACTION, "reward:confirm-skip");
-      return;
-
-    case "CONFIRM":
-      // Decline optional prompts (e.g. learn-a-new-move) to keep the moveset stable.
-      await press(Button.CANCEL, "confirm:decline");
+      // Take the highlighted reward. ACTION selects it; if it needs a target the game
+      // opens PARTY (handled below). Free items (heals/berries/held) keep the run alive.
+      await press(Button.ACTION, "reward:take");
       return;
 
     case "PARTY":
-      await press(Button.CANCEL, "party:back");
+      await handleParty(s);
+      return;
+
+    case "CONFIRM":
+      await press(Button.CANCEL, "confirm:decline");
       return;
   }
 
   // Dialogue / message prompts: advance ONLY when the handler is actually waiting.
-  // Non-waiting messages auto-advance; pressing into them races the game and can crash.
   if (s.awaitingActionInput) {
     await press(Button.ACTION, "advance");
     return;
   }
 
-  // Anything else (plain MESSAGE, transitions, STARTER_SELECT/TITLE) → let it settle.
+  // Plain MESSAGE / transitions / out-of-scope modes → let the game settle.
+}
+
+/**
+ * PARTY covers faint-switch (FAINT_SWITCH/SWITCH) and reward targeting (MODIFIER).
+ * Flow: pick a usable member (lowest-HP non-fainted), open its option menu, then confirm
+ * the primary option — which is SEND_OUT for a switch and APPLY for a reward (both first).
+ * If every member is fainted, back out (the game-over will follow).
+ */
+async function handleParty(s: GameSnapshot): Promise<void> {
+  const h = getActiveHandler();
+
+  // The Send-Out / Apply / Summary / Cancel sub-menu is open → confirm the first option.
+  if (h?.optionsMode === true) {
+    await press(Button.ACTION, "party:confirm");
+    return;
+  }
+
+  const party = s.playerParty;
+  // Target the lowest-HP member that can still battle (good for both healing and switching).
+  let target = -1;
+  let bestHp = Infinity;
+  party.forEach((p, i) => {
+    if (!p.fainted) {
+      const hp = p.hpRatio ?? 1;
+      if (hp < bestHp) { bestHp = hp; target = i; }
+    }
+  });
+
+  if (target < 0) {
+    await press(Button.CANCEL, "party:none-usable");
+    return;
+  }
+
+  const cur = s.cursor ?? 0;
+  if (cur < target) { await press(Button.DOWN, "party:nav"); return; }
+  if (cur > target) { await press(Button.UP, "party:nav"); return; }
+  await press(Button.ACTION, "party:select"); // open option menu for this member
 }
