@@ -79,29 +79,47 @@ export async function step(s: GameSnapshot): Promise<void> {
   // Plain MESSAGE / transitions / out-of-scope modes → let the game settle.
 }
 
+// PartyOption enum values (src/ui/handlers/party-ui-handler.ts). The per-member option
+// list order varies by mode and the default cursor is NOT always the useful action, so
+// we locate the option we want and navigate to it explicitly.
+const PARTY_SEND_OUT = 0; // switch this mon in (faint-switch / switch)
+const PARTY_APPLY = 3; // apply the reward item to this mon
+
 /**
- * PARTY covers faint-switch (FAINT_SWITCH/SWITCH) and reward targeting (MODIFIER).
- * Flow: pick a usable member (lowest-HP non-fainted), open its option menu, then confirm
- * the primary option — which is SEND_OUT for a switch and APPLY for a reward (both first).
- * If every member is fainted, back out (the game-over will follow).
+ * PARTY covers faint-switch and reward targeting. Two stages:
+ *   1. No option menu yet → move the party cursor to the healthiest usable member and
+ *      press ACTION to open its option menu.
+ *   2. Option menu open (handler.optionsMode) → read handler.options, navigate the option
+ *      cursor to SEND_OUT (switch) or APPLY (reward), and confirm. If neither is offered
+ *      (e.g. a check-team screen), back out so we don't wedge on SUMMARY.
  */
 async function handleParty(s: GameSnapshot): Promise<void> {
   const h = getActiveHandler();
+  if (!h) return;
 
-  // The Send-Out / Apply / Summary / Cancel sub-menu is open → confirm the first option.
-  if (h?.optionsMode === true) {
-    await press(Button.ACTION, "party:confirm");
+  if (h.optionsMode === true && Array.isArray(h.options)) {
+    const opts: number[] = h.options;
+    let target = opts.indexOf(PARTY_SEND_OUT);
+    if (target < 0) target = opts.indexOf(PARTY_APPLY);
+    if (target < 0) {
+      await press(Button.CANCEL, "party:no-action-option");
+      return;
+    }
+    const oc = typeof h.optionsCursor === "number" ? h.optionsCursor : 0;
+    if (oc < target) { await press(Button.DOWN, "party:opt-down"); return; }
+    if (oc > target) { await press(Button.UP, "party:opt-up"); return; }
+    await press(Button.ACTION, "party:select-option");
     return;
   }
 
+  // Pick the HEALTHIEST member that can still battle (best switch-in; harmless for rewards).
   const party = s.playerParty;
-  // Target the lowest-HP member that can still battle (good for both healing and switching).
   let target = -1;
-  let bestHp = Infinity;
+  let bestHp = -1;
   party.forEach((p, i) => {
     if (!p.fainted) {
       const hp = p.hpRatio ?? 1;
-      if (hp < bestHp) { bestHp = hp; target = i; }
+      if (hp > bestHp) { bestHp = hp; target = i; }
     }
   });
 
@@ -113,5 +131,5 @@ async function handleParty(s: GameSnapshot): Promise<void> {
   const cur = s.cursor ?? 0;
   if (cur < target) { await press(Button.DOWN, "party:nav"); return; }
   if (cur > target) { await press(Button.UP, "party:nav"); return; }
-  await press(Button.ACTION, "party:select"); // open option menu for this member
+  await press(Button.ACTION, "party:open-options");
 }
