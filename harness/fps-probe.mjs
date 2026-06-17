@@ -2,11 +2,12 @@
 // game.loop.actualFps over ~12s so we can compare rendering levers quickly.
 //
 // Env:
+//   RENDER=headless  -> set localStorage so the game boots with Phaser.HEADLESS (no render)
 //   TWEAK   = JS evaluated in-page with `g` (Phaser.Game) and `m` (BattleScene) in scope
 //   GLFLAGS = extra chromium args, comma-separated
-//   HEADED  = "1" to run non-headless
+//   HEADED  = "1" to run non-headless browser
 //
-// Usage: TWEAK='g.scale.setZoom(0.5)' node harness/fps-probe.mjs
+// Usage: RENDER=headless node harness/fps-probe.mjs
 
 import { chromium } from "playwright";
 
@@ -22,41 +23,39 @@ const TWEAK = process.env.TWEAK || "";
 
 const browser = await chromium.launch({ headless: process.env.HEADED !== "1", args: [...baseArgs, ...extra] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+if (process.env.RENDER === "headless") {
+  await page.addInitScript(`try { localStorage.setItem("autoRibbonHeadless", "1"); } catch (e) {}`);
+}
 await page.goto("http://localhost:8000", { waitUntil: "domcontentloaded", timeout: 60000 });
 
-// Walk to the BattleScene + its game.
-const FIND = `(() => {
+// Scene/game finder that works for both WEBGL (CanvasPool) and HEADLESS (window.game).
+const FINDER = `(() => {
   const looks=(s)=>!!s&&typeof s.getPlayerParty==="function"&&!!s.ui&&typeof s.ui.getMode==="function";
+  let scenes = window.game?.scene?.scenes;
+  if (Array.isArray(scenes)) { const m=scenes.find(looks); if(m) return { m, g: window.game }; }
   const pool=globalThis.Phaser?.Display?.Canvas?.CanvasPool?.pool??[];
-  for(const e of pool){const ss=e?.parent?.game?.scene?.scenes; if(Array.isArray(ss)){const m=ss.find(looks); if(m) return true;}}
-  return false;
-})()`;
-const t0 = Date.now();
-while (Date.now() - t0 < 120000) { if (await page.evaluate(FIND)) break; await page.waitForTimeout(2000); }
-await page.waitForTimeout(3000); // let it settle past loading
+  for(const e of pool){const ss=e?.parent?.game?.scene?.scenes; if(Array.isArray(ss)){const m=ss.find(looks); if(m) return { m, g: e.parent.game };}}
+  return null;
+})`;
 
-// Apply tweak (with g = game, m = scene in scope).
+const t0 = Date.now();
+while (Date.now() - t0 < 120000) { if (await page.evaluate(`!!${FINDER}()`)) break; await page.waitForTimeout(2000); }
+await page.waitForTimeout(3000); // settle past loading
+
 const applied = await page.evaluate(`(() => {
-  const looks=(s)=>!!s&&typeof s.getPlayerParty==="function"&&!!s.ui;
-  const pool=globalThis.Phaser?.Display?.Canvas?.CanvasPool?.pool??[];
-  for(const e of pool){const ss=e?.parent?.game?.scene?.scenes; if(Array.isArray(ss)){const m=ss.find(looks); if(m){
-    const g=e.parent.game;
-    try { ${TWEAK ? TWEAK + ";" : ""} } catch(err){ return "TWEAK ERROR: "+err.message; }
-    const cv=g.canvas; const gl=g.renderer?.gl;
-    return { tweak: ${JSON.stringify(TWEAK || "(none)")},
-      canvas:[cv?.width, cv?.height],
-      drawBuffer:[gl?.drawingBufferWidth, gl?.drawingBufferHeight],
-      gameSize:[g.scale?.gameSize?.width, g.scale?.gameSize?.height] };
-  }}}
-  return "no scene";
+  const r=${FINDER}(); if(!r) return "no scene"; const {m,g}=r;
+  try { ${TWEAK ? TWEAK + ";" : ""} } catch(err){ return "TWEAK ERROR: "+err.message; }
+  const cv=g.canvas; const gl=g.renderer?.gl;
+  return { renderType: g.config?.renderType, headless: g.renderer?.constructor?.name,
+    canvas: cv ? [cv.width, cv.height] : null,
+    drawBuffer: gl ? [gl.drawingBufferWidth, gl.drawingBufferHeight] : null };
 })()`);
 console.log("applied:", JSON.stringify(applied));
 
-// Sample fps over 12s.
 const fps = [];
 for (let i = 0; i < 12; i++) {
   await page.waitForTimeout(1000);
-  const f = await page.evaluate(`(() => { const pool=globalThis.Phaser?.Display?.Canvas?.CanvasPool?.pool??[]; for(const e of pool){const g=e?.parent?.game; if(g?.loop) return Math.round(g.loop.actualFps);} return 0; })()`);
+  const f = await page.evaluate(`(() => { const r=${FINDER}(); return r ? Math.round(r.g.loop.actualFps) : 0; })()`);
   fps.push(f);
 }
 fps.sort((a, b) => a - b);
