@@ -51,6 +51,16 @@ while (Date.now() - t0 < 120000) { if (await ready()) break; await page.waitForT
 await page.addScriptTag({ content: BUNDLE });
 await page.waitForTimeout(1000);
 
+// Disable in-game tutorials (the "Tutorials" setting defaults On and sets disableMenu
+// during overlays, which blocks the start). Harness-only convenience; the real
+// userscript never mutates the scene.
+await page.evaluate(`(() => {
+  const looks=(s)=>!!s&&typeof s.getPlayerParty==="function"&&!!s.ui;
+  const pool=globalThis.Phaser?.Display?.Canvas?.CanvasPool?.pool??[];
+  for(const e of pool){const ss=e?.parent?.game?.scene?.scenes; if(Array.isArray(ss)){const m=ss.find(looks); if(m){ m.enableTutorials=false; m.disableMenu=false; return true; }}}
+  return false;
+})()`);
+
 const snap = () => page.evaluate(() => window.autoRibbon?.snapshot?.() ?? null);
 const press = (btn) => page.evaluate(PRESS, btn);
 const shot = (n) => page.screenshot({ path: join(OUT, n) }).catch(() => {});
@@ -75,7 +85,9 @@ for (let step = 0; step < 80; step++) {
     await press(B.SUBMIT); await page.waitForTimeout(900);   // tryStart → confirm dialog
     await press(B.ACTION); await page.waitForTimeout(900);   // confirm "Begin?"
     await shot(`after-start-${step}.png`);
-    startedRun = true;
+    const after = await snap();
+    // Only consider the run started once we've left the starter screens.
+    if (after?.uiMode !== "STARTER_SELECT" && after?.uiMode !== "OPTION_SELECT") startedRun = true;
     continue;
   }
 
