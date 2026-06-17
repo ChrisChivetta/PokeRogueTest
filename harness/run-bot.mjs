@@ -59,14 +59,18 @@ await page.addScriptTag({ content: BUNDLE });
 await sleep(1000);
 await page.evaluate(`(() => { const looks=(s)=>!!s&&typeof s.getPlayerParty==="function"&&!!s.ui; const pool=globalThis.Phaser?.Display?.Canvas?.CanvasPool?.pool??[]; for(const e of pool){const ss=e?.parent?.game?.scene?.scenes; if(Array.isArray(ss)){const m=ss.find(looks); if(m){ m.enableTutorials=false; m.disableMenu=false; return; }}} })()`);
 
-// ── Phase A: state-driven run start ──
+// ── Phase A: state-driven run start (retry add-starter until the Begin confirm shows) ──
 const startLog = [];
 await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 70000, "→starter");
 startLog.push("reached STARTER_SELECT");
-await driveUntil(B.ACTION, (s) => modeOf(s) === "OPTION_SELECT", 8000, "open-menu");
-await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 8000, "add-to-party");
-startLog.push("starter added");
-await driveUntil(B.SUBMIT, (s) => modeOf(s) === "CONFIRM", 8000, "submit→confirm");
+let confirmed = null;
+for (let attempt = 0; attempt < 5 && !confirmed; attempt++) {
+  await driveUntil(B.ACTION, (s) => modeOf(s) === "OPTION_SELECT", 6000, "open-menu");
+  await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 6000, "add-to-party");
+  confirmed = await driveUntil(B.SUBMIT, (s) => modeOf(s) === "CONFIRM", 6000, "submit→confirm");
+  if (!confirmed) await press(B.CANCEL); // close any stray menu before retrying
+}
+startLog.push(confirmed ? "starter added (confirm shown)" : "FAILED to add starter");
 await driveUntil(B.ACTION, (s) => !["CONFIRM", "STARTER_SELECT", "OPTION_SELECT"].includes(modeOf(s)), 8000, "confirm-begin");
 startLog.push("run starting");
 const atCmd = await driveUntil(B.ACTION, (s) => modeOf(s) === "COMMAND" && !!s?.battle, 60000, "→command");

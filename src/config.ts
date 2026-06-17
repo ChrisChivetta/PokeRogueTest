@@ -31,9 +31,9 @@ export const config: Config = {
   dryRun: true, // Phase 0: observe only.
   enabled: true,
   logLevel: "info",
-  tickIntervalMs: 500,
-  inputDelayMinMs: 150,
-  inputDelayMaxMs: 600,
+  tickIntervalMs: 700,
+  inputDelayMinMs: 300,
+  inputDelayMaxMs: 850,
   maxTurnsPerWave: 80,
   maxWallClockPerRunMs: 60 * 60 * 1000, // 1h per run ceiling
 };
