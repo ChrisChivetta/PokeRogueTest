@@ -104,18 +104,17 @@ await page.evaluate(`(() => { const looks=(s)=>!!s&&typeof s.getPlayerParty==="f
 const startLog = [];
 await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 70000, "→starter");
 startLog.push("reached STARTER_SELECT");
-let added = 0;
-for (let k = 0; k < 3; k++) {
-  const opened = await driveUntil(B.ACTION, (s) => modeOf(s) === "OPTION_SELECT", 5000, "open-menu");
-  if (!opened) break;
-  await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 5000, "add-to-party"); // "Add to Party"
-  added++;
-  if (k < 2) { await press(B.RIGHT); await sleep(450); } // move cursor to the next starter
+async function addStarterAtCursor() {
+  await driveUntil(B.ACTION, (s) => modeOf(s) === "OPTION_SELECT", 5000, "open-menu");
+  await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 5000, "add-to-party"); // first option = Add to Party
 }
-startLog.push(`added ~${added} starters`);
-// CRITICAL: close any open starter context menu before starting, or it persists as the
-// active handler over the battle and swallows the bot's inputs (stalls wave 1).
-await driveUntil(B.CANCEL, (s) => modeOf(s) === "STARTER_SELECT", 4000, "close-menu");
+await addStarterAtCursor();                 // Bulbasaur (cursor 0)
+await press(B.RIGHT); await sleep(600);      // → Charmander
+await addStarterAtCursor();                 // Charmander
+// Make sure no context menu is still open (complete a pending add with ACTION, never
+// CANCEL — CANCEL in starter-select opens the SUMMARY screen). Then we're clean to start.
+await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 4000, "ensure-starter-select");
+startLog.push("added 2 starters");
 // Begin the run (retry once if the confirm doesn't show).
 let confirmed = await driveUntil(B.SUBMIT, (s) => modeOf(s) === "CONFIRM", 6000, "submit→confirm");
 if (!confirmed) { await press(B.CANCEL); confirmed = await driveUntil(B.SUBMIT, (s) => modeOf(s) === "CONFIRM", 6000, "retry-submit"); }
