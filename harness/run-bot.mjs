@@ -113,6 +113,9 @@ for (let k = 0; k < 3; k++) {
   if (k < 2) { await press(B.RIGHT); await sleep(450); } // move cursor to the next starter
 }
 startLog.push(`added ~${added} starters`);
+// CRITICAL: close any open starter context menu before starting, or it persists as the
+// active handler over the battle and swallows the bot's inputs (stalls wave 1).
+await driveUntil(B.CANCEL, (s) => modeOf(s) === "STARTER_SELECT", 4000, "close-menu");
 // Begin the run (retry once if the confirm doesn't show).
 let confirmed = await driveUntil(B.SUBMIT, (s) => modeOf(s) === "CONFIRM", 6000, "submit→confirm");
 if (!confirmed) { await press(B.CANCEL); confirmed = await driveUntil(B.SUBMIT, (s) => modeOf(s) === "CONFIRM", 6000, "retry-submit"); }
