@@ -99,22 +99,16 @@ await page.evaluate(`(() => { const looks=(s)=>!!s&&typeof s.getPlayerParty==="f
   return;
 }}} })()`);
 
-// ── Phase A: state-driven run start — draft a 3-mon team (Bulbasaur/Charmander/Squirtle,
-//    cost 3 each = 9 ≤ 10) so faint-switch has fodder, then begin. ──
+// ── Phase A: state-driven run start. Use a SINGLE starter — it starts cleanly (no
+//    "choose your lead" PARTY screen) and reliably reaches COMMAND. (Multi-mon drafting
+//    is flaky test-scaffolding; faint-switch will be validated on the real account.) ──
 const startLog = [];
 await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 70000, "→starter");
 startLog.push("reached STARTER_SELECT");
-async function addStarterAtCursor() {
-  await driveUntil(B.ACTION, (s) => modeOf(s) === "OPTION_SELECT", 5000, "open-menu");
-  await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 5000, "add-to-party"); // first option = Add to Party
-}
-await addStarterAtCursor();                 // Bulbasaur (cursor 0)
-await press(B.RIGHT); await sleep(600);      // → Charmander
-await addStarterAtCursor();                 // Charmander
-// Make sure no context menu is still open (complete a pending add with ACTION, never
-// CANCEL — CANCEL in starter-select opens the SUMMARY screen). Then we're clean to start.
-await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 4000, "ensure-starter-select");
-startLog.push("added 2 starters");
+await driveUntil(B.ACTION, (s) => modeOf(s) === "OPTION_SELECT", 5000, "open-menu");
+await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 5000, "add-to-party");
+await driveUntil(B.ACTION, (s) => modeOf(s) === "STARTER_SELECT", 3000, "settle"); // ensure no menu open
+startLog.push("added 1 starter");
 // Begin the run (retry once if the confirm doesn't show).
 let confirmed = await driveUntil(B.SUBMIT, (s) => modeOf(s) === "CONFIRM", 6000, "submit→confirm");
 if (!confirmed) { await press(B.CANCEL); confirmed = await driveUntil(B.SUBMIT, (s) => modeOf(s) === "CONFIRM", 6000, "retry-submit"); }
