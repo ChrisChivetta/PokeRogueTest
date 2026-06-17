@@ -62,6 +62,12 @@ export async function step(s: GameSnapshot): Promise<void> {
     case "CONFIRM":
       await press(Button.CANCEL, "confirm:decline");
       return;
+
+    case "SUMMARY":
+      // Not part of normal battle flow — back out so a stray summary screen can't
+      // wedge the bot (also makes it resilient to unexpected UI states generally).
+      await press(Button.CANCEL, "summary:back");
+      return;
   }
 
   // Dialogue / message prompts: advance ONLY when the handler is actually waiting.
