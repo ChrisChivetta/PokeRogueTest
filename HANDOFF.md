@@ -108,10 +108,14 @@ Only after reads are confirmed do we wire inputs.
     (`readRoster`/`readCandyStarters` — owned starters, effective+base cost, ribbon status,
     candy/valueReduction). Tests: `tests/{team,orchestrator,candy}.test.ts` +
     `tests/integration/roster.test.ts` (against real headless gameData).
-  - **Still open in Phase 3:** the EXECUTION/glue — drive the title → starter-select UI to enact
-    the team + candy plan, the cross-run loop (play → game-over → record → restart), progress
-    persistence, and the safety caps. These are UI-driving (hard to GameManager-test; need the
-    live harness). The brain that decides WHAT to do is done; what remains is DOING it.
+  - **Still open in Phase 3:** the EXECUTION/glue. The cross-run loop's PURE router is done +
+    tested (`src/runloop.ts` `decideLoopAction()` — routes each screen to PLAY / START_RUN /
+    SELECT_TEAM / STOP_DONE / WAIT; the run lifecycle falls out via TITLE→START_RUN). What's left
+    is the version-fragile UI ADAPTERS it implies — navigating the title screen into a Classic run,
+    and driving the starter-select grid to enact the team + candy plan — plus progress persistence
+    and the safety caps. These can't be GameManager-tested (upstream's own starter-select UI test
+    is `describe.todo`, disabled for "state corruption"), so they're a LIVE-HARNESS slice. The
+    brain that decides WHAT to do is complete and tested; only the screen-driving DOING-it remains.
 - **Phase 4** — hardening: edge cases (doubles, odd encounters, shop variants), recovery from a
   lost run, local-instance fallback (`@match localhost`). *Verify: long unattended session.*
   - **Mystery encounters ✓ done** — detection (UI mode `MYSTERY_ENCOUNTER`) + resolution in
