@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "smoke": "node build.mjs && node harness/smoke.mjs"
+    "smoke": "node build.mjs && node harness/smoke.mjs",
+    "smoke:run": "node build.mjs && node harness/smoke-run.mjs"
   },
   "license": "AGPL-3.0-only",
   "devDependencies": {

@@ -17,11 +17,49 @@ import { log } from "./log";
 import { isSceneReady, sceneProbe, modeProbe, type SceneProbe, type ModeProbe } from "./bridge";
 import { readState, summarize, type GameSnapshot } from "./state";
 import { mountHud, updateHud } from "./hud";
-import { sleep, actionsSentCount } from "./input";
+import { sleep, actionsSentCount, press } from "./input";
+import { Button, type ButtonName } from "./bridge";
 import { step as policyStep } from "./policy";
+import { decideLoopAction } from "./runloop";
+import { driveStartRun } from "./execution";
+import { planRun } from "./orchestrator";
+import { readRoster } from "./roster";
 
 let looping = false;
 let lastSummary = "";
+let announcedDone = false;
+
+/**
+ * Top-level meta-loop tick: route the current screen to a high-level action (runloop.ts) and
+ * dispatch — battle screens to the policy, the title flow to the start-run driver, the
+ * starter-select screen to the team driver. Composes the whole bot.
+ */
+async function tick(snap: GameSnapshot): Promise<void> {
+  const inRun = snap.battle != null;
+  // Reading the roster is only meaningful at the title (deciding whether we're done).
+  const objectiveDone = snap.uiMode === "TITLE" ? planRun(readRoster()).done : false;
+
+  const action = decideLoopAction({ uiMode: snap.uiMode, enabled: config.enabled, inRun, objectiveDone });
+  switch (action) {
+    case "PLAY":
+      await policyStep(snap);
+      return;
+    case "START_RUN":
+      await driveStartRun(snap);
+      return;
+    case "SELECT_TEAM":
+      // driveStarterSelect(snap) — built next; for now the bot waits at starter select.
+      return;
+    case "STOP_DONE":
+      if (!announcedDone) {
+        announcedDone = true;
+        log.banner("OBJECTIVE COMPLETE — every owned starter line is ribboned. Idling.");
+      }
+      return;
+    case "WAIT":
+      return;
+  }
+}
 
 async function driveLoop(): Promise<void> {
   if (looping) return;
@@ -42,7 +80,7 @@ async function driveLoop(): Promise<void> {
       }
       updateHud(snap);
 
-      await policyStep(snap); // no-op presses under dryRun
+      await tick(snap); // routes to policy / start-run / team driver (no-op presses under dryRun)
     } catch (e) {
       log.error("[loop]", e);
     }
@@ -85,6 +123,14 @@ const api = {
     const p = modeProbe();
     log.info("modeProbe:", p);
     return p;
+  },
+  /**
+   * Diagnostic: send ONE button through the bot's real input layer (same path the policy
+   * uses — honors config.dryRun/enabled/pacing). Lets the live harness validate input
+   * DRIVING (does ui.processInput actually move a real handler?). e.g. autoRibbon.tap("DOWN").
+   */
+  tap(name: ButtonName): Promise<boolean> {
+    return press(Button[name], `diag:${name}`);
   },
 };
 

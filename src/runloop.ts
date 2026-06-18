@@ -22,33 +22,33 @@ export interface LoopContext {
   objectiveDone: boolean;
   /** Kill-switch / master enable (config.enabled). */
   enabled: boolean;
+  /** Is a run in progress (snapshot.battle != null)? Disambiguates the shared menu modes. */
+  inRun: boolean;
 }
 
-// Screens the battle policy (policy.step) already owns — in-battle, rewards, encounters, dialogue.
-// On any of these the loop simply defers to the existing, well-tested policy.
-const PLAY_MODES = new Set([
-  "COMMAND", "FIGHT", "BALL", "TARGET_SELECT", "MODIFIER_SELECT", "PARTY", "CONFIRM", "SUMMARY",
-  "MYSTERY_ENCOUNTER", "OPTION_SELECT", "MESSAGE",
+// Modes that only ever appear DURING a battle → always the battle policy's job.
+const BATTLE_MODES = new Set([
+  "COMMAND", "FIGHT", "BALL", "TARGET_SELECT", "MODIFIER_SELECT", "PARTY", "SUMMARY",
+  "MYSTERY_ENCOUNTER",
 ]);
+// Modes that appear BOTH in a battle (dialogue / learn-move confirm / encounter sub-option) AND
+// during title navigation (gender prompt, game-mode submenu, intro). `inRun` picks which.
+const SHARED_MODES = new Set(["OPTION_SELECT", "CONFIRM", "MESSAGE"]);
 
 /**
  * Route the current screen to a high-level action. Deterministic and side-effect free. The run
  * lifecycle falls out naturally: a finished run (win OR wipe) returns to the TITLE, where — unless
- * the objective is complete — we START_RUN again, so there's no explicit "restart" state.
+ * the objective is complete — we START_RUN again, so there's no explicit "restart" state. The
+ * shared menu/dialogue modes route to the battle policy mid-run and to the title driver otherwise.
  */
 export function decideLoopAction(ctx: LoopContext): LoopAction {
   if (!ctx.enabled) return "WAIT"; // kill-switch: do nothing, anywhere
 
-  if (PLAY_MODES.has(ctx.uiMode)) return "PLAY";
+  if (ctx.uiMode === "STARTER_SELECT") return "SELECT_TEAM";
+  if (BATTLE_MODES.has(ctx.uiMode)) return "PLAY";
+  if (SHARED_MODES.has(ctx.uiMode)) return ctx.inRun ? "PLAY" : "START_RUN";
+  if (ctx.uiMode === "TITLE") return ctx.objectiveDone ? "STOP_DONE" : "START_RUN";
 
-  switch (ctx.uiMode) {
-    case "TITLE":
-      return ctx.objectiveDone ? "STOP_DONE" : "START_RUN";
-    case "STARTER_SELECT":
-      return "SELECT_TEAM";
-    default:
-      // SAVE_SLOT, SETTINGS, loading/transition screens, anything unrecognized → wait, never
-      // mash. (The live adapters resolve SAVE_SLOT/CONFIRM that appear mid-START_RUN inline.)
-      return "WAIT";
-  }
+  // SAVE_SLOT, SETTINGS, loading/transition screens, anything unrecognized → wait, never mash.
+  return "WAIT";
 }
