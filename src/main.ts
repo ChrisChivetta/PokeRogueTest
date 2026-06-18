@@ -26,7 +26,7 @@ import { getCurrentPhaseName } from "./bridge";
 import { planRun, summarizeProgress } from "./orchestrator";
 import { readRoster } from "./roster";
 import { checkRunSafety, resetSafety } from "./safety";
-import { shouldRetry, noteRetry, retryGeneration, resetRetry, noteWave } from "./retry";
+import { shouldRetry, noteRetry, retryGeneration, resetRetry, noteWave, retriesTaken } from "./retry";
 
 let looping = false;
 let lastSummary = "";
@@ -176,6 +176,35 @@ const api = {
   progress(): { owned: number; ribboned: number; remaining: number; done: boolean } {
     const plan = planRun(readRoster());
     return { owned: plan.ownedCount, ribboned: plan.ribbonedCount, remaining: plan.remaining, done: plan.done };
+  },
+  /**
+   * One-call rich telemetry for the soak harness — battle/party health + cumulative counters, so a
+   * sample is atomic (no multi-round-trip races). All defensively read; never throws.
+   */
+  telemetry(): Record<string, unknown> {
+    const s = readState();
+    const party = s.playerParty ?? [];
+    const alive = party.filter((p) => !p.fainted);
+    const hpFrac = alive.length
+      ? alive.reduce((a, p) => a + (p.hpRatio ?? 0), 0) / alive.length
+      : 0;
+    const levels = party.map((p) => p.level ?? 0);
+    const foe = (s.enemyParty ?? []).find((p) => p.onField) ?? (s.enemyParty ?? [])[0];
+    return {
+      ready: s.ready,
+      uiMode: s.uiMode,
+      wave: s.battle?.waveIndex ?? null,
+      isBossWave: s.battle?.isBossWave ?? false,
+      partySize: party.length,
+      partyAlive: alive.length,
+      partyFainted: party.length - alive.length,
+      hpFrac: Math.round(hpFrac * 100) / 100,
+      topLevel: levels.length ? Math.max(...levels) : 0,
+      foeLevel: foe?.level ?? null,
+      foeBoss: foe?.isBoss ?? false,
+      retries: retriesTaken(),
+      ...this.progress(),
+    };
   },
   ready(): boolean {
     return isSceneReady();

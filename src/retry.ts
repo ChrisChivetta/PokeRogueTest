@@ -9,11 +9,17 @@ import { config } from "./config";
 
 let generation = 0;
 let lastWave = -1;
+let totalRetries = 0; // cumulative across the whole session (telemetry); never reset per-run
 
-/** Reset all retry state (new run / leaving a run). */
+/** Reset per-run retry state (new run / leaving a run). Keeps the cumulative session count. */
 export function resetRetry(): void {
   generation = 0;
   lastWave = -1;
+}
+
+/** Total retries taken this session (for soak telemetry). */
+export function retriesTaken(): number {
+  return totalRetries;
 }
 
 /**
@@ -33,9 +39,10 @@ export function shouldRetry(): boolean {
   return generation < config.maxRetriesPerWave;
 }
 
-/** Record that we've taken a retry — bumps the variation generation. */
+/** Record that we've taken a retry — bumps the variation generation + the session counter. */
 export function noteRetry(): void {
   generation++;
+  totalRetries++;
 }
 
 /** Current strategy-variation generation (0 = first attempt; N = Nth retry). */

@@ -39,6 +39,16 @@ function emit(event, data = {}) {
 
 // Aggregate stats across the whole session (survive browser restarts).
 const stats = { runsStarted: 0, runsEnded: 0, maxWaveEver: 0, ribbonsGained: 0, halts: 0, crashes: 0, errors: 0, ribbonsBaseline: null };
+const runRecords = []; // one {n, maxWave, outcome, durationMs, retriesUsed, minHpFrac, maxFainted, topLevel} per finished run
+
+/** Bucket finished-run depths into a 1-line histogram (waves 1-10, 11-25, 26-50, …). */
+function waveHistogram() {
+  const buckets = [[1, 10], [11, 25], [26, 50], [51, 100], [101, 150], [151, 199], [200, 999]];
+  const labels = ["1-10", "11-25", "26-50", "51-100", "101-150", "151-199", "200+(clear)"];
+  const counts = buckets.map(([lo, hi]) => runRecords.filter((r) => r.maxWave >= lo && r.maxWave <= hi).length);
+  return labels.map((l, i) => `${l}:${counts[i]}`).join(" ");
+}
+function median(xs) { if (!xs.length) return 0; const s = [...xs].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; }
 
 async function bootBot(browser) {
   const page = await browser.newPage();
@@ -65,15 +75,16 @@ async function bootBot(browser) {
 
 async function sample(page) {
   return page.evaluate(() => {
-    const s = globalThis.autoRibbon.snapshot();
-    const prog = globalThis.autoRibbon.progress();
+    const t = globalThis.autoRibbon.telemetry();
     const sc = globalThis.__sc;
     return {
-      mode: s.uiMode, wave: s.battle?.waveIndex ?? null, party: s.playerParty.length,
-      actions: globalThis.autoRibbon.actions(), enabled: globalThis.autoRibbon.config.enabled,
+      ...t,
+      mode: t.uiMode,
+      party: t.partySize,
+      actions: globalThis.autoRibbon.actions(),
+      enabled: globalThis.autoRibbon.config.enabled,
       phase: sc?.phaseManager?.getCurrentPhase?.()?.phaseName ?? null,
       fps: Math.round(sc?.game?.loop?.actualFps ?? 0),
-      ribboned: prog.ribboned, owned: prog.owned, remaining: prog.remaining, done: prog.done,
     };
   });
 }
@@ -82,7 +93,7 @@ let browser = await chromium.launch({ args: [...glArgs, "--no-sandbox", "--disab
 let page = await bootBot(browser);
 emit("start", { url: URL, hours: HOURS, gl: GL, log: LOG, enableRetries: ENABLE_RETRIES, humanPacing: HUMAN_PACING });
 
-let inRun = false, maxWaveThisRun = 0, lastSummary = Date.now();
+let inRun = false, run = null, lastSummary = Date.now();
 while (Date.now() < DEADLINE) {
   let s;
   try {
@@ -103,11 +114,32 @@ while (Date.now() < DEADLINE) {
   const gained = s.ribboned - stats.ribbonsBaseline;
   if (gained > stats.ribbonsGained) { stats.ribbonsGained = gained; emit("ribbon-gained", { total: s.ribboned, gainedThisSoak: gained }); }
 
-  // Run lifecycle by the battle wave appearing/disappearing.
+  // Run lifecycle by the battle wave appearing/disappearing, with per-run health/strategy stats.
   const nowInRun = s.wave != null && s.party > 0;
-  if (nowInRun && !inRun) { inRun = true; maxWaveThisRun = 0; stats.runsStarted++; emit("run-start", { n: stats.runsStarted, ribboned: s.ribboned }); }
-  if (nowInRun) { if (s.wave > maxWaveThisRun) maxWaveThisRun = s.wave; if (s.wave > stats.maxWaveEver) stats.maxWaveEver = s.wave; }
-  if (!nowInRun && inRun && s.phase !== "GameOverPhase") { inRun = false; stats.runsEnded++; emit("run-end", { n: stats.runsEnded, maxWave: maxWaveThisRun }); }
+  if (nowInRun && !inRun) {
+    inRun = true;
+    stats.runsStarted++;
+    run = { n: stats.runsStarted, startMs: Date.now(), maxWave: s.wave, minHpFrac: 1, maxFainted: 0, topLevel: 0, retriesAt: s.retries };
+    emit("run-start", { n: run.n, ribboned: s.ribboned });
+  }
+  if (nowInRun && run) {
+    run.maxWave = Math.max(run.maxWave, s.wave);
+    run.minHpFrac = Math.min(run.minHpFrac, s.hpFrac ?? 1);
+    run.maxFainted = Math.max(run.maxFainted, s.partyFainted ?? 0);
+    run.topLevel = Math.max(run.topLevel, s.topLevel ?? 0);
+    if (s.wave > stats.maxWaveEver) stats.maxWaveEver = s.wave;
+  }
+  if (!nowInRun && inRun && s.phase !== "GameOverPhase") {
+    inRun = false;
+    stats.runsEnded++;
+    const outcome = run.maxWave >= 200 ? "clear" : "wipe"; // wave-200 Eternatus clear vs earlier wipe
+    const rec = { n: run.n, maxWave: run.maxWave, outcome, durationMs: Date.now() - run.startMs,
+      retriesUsed: s.retries - run.retriesAt, minHpFrac: Math.round(run.minHpFrac * 100) / 100,
+      maxFainted: run.maxFainted, topLevel: run.topLevel };
+    runRecords.push(rec);
+    emit("run-end", rec);
+    run = null;
+  }
 
   // Objective complete → we're done; stop early.
   if (s.done) { emit("objective-complete", { ribboned: s.ribboned }); break; }
@@ -122,13 +154,27 @@ while (Date.now() < DEADLINE) {
   emit("sample", s);
   if (Date.now() - lastSummary > 300_000) { // every 5 min, a human-readable rollup
     lastSummary = Date.now();
-    emit("summary", { ...stats, curWave: s.wave, curMode: s.mode, fps: s.fps });
+    const wipes = runRecords.filter((r) => r.outcome === "wipe").map((r) => r.maxWave);
+    emit("summary", {
+      ...stats, curWave: s.wave, curMode: s.mode, fps: s.fps,
+      clears: runRecords.filter((r) => r.outcome === "clear").length,
+      medianDeathWave: median(wipes), histogram: waveHistogram(),
+    });
   }
   await new Promise((r) => setTimeout(r, 5000));
 }
 
-emit("done", { ...stats, ranHours: ((Date.now() - t0) / 3600_000).toFixed(2) });
-console.log(`\n[soak] FINAL — runs:${stats.runsStarted} ended:${stats.runsEnded} maxWave:${stats.maxWaveEver} ribbons+:${stats.ribbonsGained} halts:${stats.halts} crashes:${stats.crashes} errors:${stats.errors}`);
-console.log(`[soak] full event log: ${LOG}`);
+const wipes = runRecords.filter((r) => r.outcome === "wipe").map((r) => r.maxWave);
+const clears = runRecords.filter((r) => r.outcome === "clear").length;
+emit("done", {
+  ...stats, ranHours: ((Date.now() - t0) / 3600_000).toFixed(2),
+  clears, medianDeathWave: median(wipes), histogram: waveHistogram(),
+});
+console.log(`\n[soak] FINAL ─────────────────────────────────────────`);
+console.log(`  runs:${stats.runsStarted} finished:${stats.runsEnded}  clears:${clears} wipes:${wipes.length}`);
+console.log(`  max wave ever:${stats.maxWaveEver}  median death wave:${median(wipes)}  ribbons+:${stats.ribbonsGained}`);
+console.log(`  retries:${stats.runsEnded ? runRecords.reduce((a, r) => a + r.retriesUsed, 0) : 0}  halts:${stats.halts} crashes:${stats.crashes} errors:${stats.errors}`);
+console.log(`  depth histogram: ${waveHistogram()}`);
+console.log(`  full event log: ${LOG}`);
 try { await browser.close(); } catch {}
 process.exit(0);
