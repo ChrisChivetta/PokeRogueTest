@@ -149,17 +149,23 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
   // gameData updates after each, so planCandy naturally shrinks until nothing's left.
   if (!candyDone) {
     const pending = planCandy(readCandyStarters());
-    const next = pending.find((a) => idxOf(a.speciesId) >= 0);
     if (!candyLogged) {
       candyLogged = true;
-      log.info(`[starter] candy plan: ${pending.length} reduction(s); next reachable: ${next ? "#" + next.speciesId : "none"}`);
+      log.info(`[starter] candy plan: ${pending.length} reduction(s) pending`);
     }
-    if (!next || candyAttempts >= MAX_CANDY_ATTEMPTS) {
-      candyDone = true; // nothing affordable/reachable (or we've tried enough) → build the team
+    if (pending.length === 0 || candyAttempts >= MAX_CANDY_ATTEMPTS) {
+      candyDone = true; // every reduction applied (or we've tried enough) → build the team
     } else {
       candyAttempts++;
-      const idx = idxOf(next.speciesId);
-      if ((h.cursor ?? 0) === idx) { await press(Button.ACTION, "starter:open-candy-menu"); return; }
+      const next = pending.find((a) => idxOf(a.speciesId) >= 0);
+      const idx = next ? idxOf(next.speciesId) : -1;
+      const cur = h.cursor ?? 0;
+      const onBtn = h.startCursorObj?.visible === true || h.randomCursorObj?.visible === true;
+      if (candyAttempts % 4 === 1) log.info(`[starter] candy nav: cur=${cur} idx=${idx} mon=${next ? "#" + next.speciesId : "none"} onBtn=${onBtn}`);
+      if (idx < 0) return; // pending but not reachable this tick — wait, don't latch candyDone
+      // Ensure we're in the grid (the cursor can default to the start/random button on entry).
+      if (onBtn) { await press(Button.LEFT, "starter:candy-to-grid"); return; }
+      if (cur === idx) { await press(Button.ACTION, "starter:open-candy-menu"); return; }
       await stepGridTo(h, idx);
       return;
     }
