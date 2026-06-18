@@ -45,6 +45,7 @@ only touch them for a small, surgical fix, and re-run the smoke harness (`npm ru
 - results plateauing — report what you found and your best next idea instead of thrashing.
 
 ## Reporting
-Keep it tight. After each soak, post: the before→after histogram + median death wave, what you
-changed, and the next hypothesis. Append a one-line result to the commit message so the branch
-history reads as a measurable progression.
+Log every iteration to **`RESULTS.md`** using the template block already in that file (newest at
+top): hypothesis, median-death-wave + histogram before→after, verdict (kept/reverted), commit.
+Also put the one-line delta in the commit message (e.g. "median death wave 24 → 41") so the branch
+history reads as a measurable progression. Fill the baseline entry from your first soak.
