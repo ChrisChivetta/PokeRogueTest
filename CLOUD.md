@@ -24,9 +24,14 @@ leave it** (they go straight into the droplet's user-data).
 ## Launch
 ```bash
 bash harness/do-launch.sh
-# cheaper/slower box:   DO_SIZE=c-8 bash harness/do-launch.sh
-# different region:     DO_REGION=sfo3 bash harness/do-launch.sh
+# default size is s-8vcpu-16gb (basic, works on new accounts, ≈$0.18/hr)
+# more FPS (needs a higher account tier):  DO_SIZE=c-16 bash harness/do-launch.sh
+# smaller/cheaper:                          DO_SIZE=s-4vcpu-8gb bash harness/do-launch.sh
+# different region:                         DO_REGION=sfo3 bash harness/do-launch.sh
 ```
+> **422 "size is currently restricted"?** Your account tier can't launch that size yet (common on
+> new accounts for the `c-*` CPU-optimized droplets). Use a basic `s-*` size (the default already
+> is one); `doctl compute size list` shows what's available.
 The droplet boots, clones this branch, runs `soak-setup.sh`, installs Claude Code, and starts the
 autonomous loop. First boot ~10–15 min (the 800MB asset pull dominates).
 
@@ -47,7 +52,8 @@ doctl compute droplet delete pokerogue-soak-<name>   # the launcher prints the e
 This stops billing **and** wipes the tokens that live in the droplet's user-data/metadata.
 
 ## Cost & security notes
-- **Cost:** `c-16` ≈ $0.95/hr, `c-8` ≈ $0.48/hr. A few hours is a few dollars — just destroy it.
+- **Cost:** `s-8vcpu-16gb` ≈ $0.18/hr (default), `s-4vcpu-8gb` ≈ $0.07/hr, `c-16` ≈ $0.95/hr (if
+  your tier allows it). A few hours is a couple dollars — just destroy it.
 - **Tokens in metadata:** the GitHub PAT and Claude token sit in the droplet's user-data while it
   lives. That's why the box is throwaway and single-user; destroying it removes them. The clone
   token is also stripped from `.git/config` right after cloning. You can revoke either token after

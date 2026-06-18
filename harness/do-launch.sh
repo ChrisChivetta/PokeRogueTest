@@ -8,14 +8,15 @@
 #   • a GitHub PAT (read-only) for the private bot repo  →  export GITHUB_TOKEN=github_pat_...
 #   • a Claude subscription token       →  run `claude setup-token` on your logged-in machine,
 #                                            then  export CLAUDE_CODE_OAUTH_TOKEN=...
-# Optional: DO_SIZE (default c-16, 16 dedicated vCPU ≈ $0.95/hr; use c-8 ≈ $0.48/hr to save),
+# Optional: DO_SIZE (default s-8vcpu-16gb basic ≈ $0.18/hr, works on new accounts; bump to a
+#           CPU-optimized c-16/c-8 for more FPS once your account tier allows it),
 #           DO_REGION (default nyc3), REPO, BRANCH.
 set -euo pipefail
 
 : "${GITHUB_TOKEN:?export GITHUB_TOKEN (read-only PAT for the private repo)}"
 : "${CLAUDE_CODE_OAUTH_TOKEN:?export CLAUDE_CODE_OAUTH_TOKEN (from: claude setup-token)}"
 
-SIZE="${DO_SIZE:-c-16}"
+SIZE="${DO_SIZE:-s-8vcpu-16gb}"
 REGION="${DO_REGION:-nyc3}"
 IMAGE="ubuntu-22-04-x64"
 BRANCH="${BRANCH:-claude/vibrant-newton-iv3zlw}"
