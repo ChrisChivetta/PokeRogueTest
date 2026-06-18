@@ -15,7 +15,19 @@ on a laptop that has the game + the Claude-in-Chrome extension connected.
 - `docs/research-strategy.md` — carry tier list, the carry-and-swap loop, reward priority,
   unattended-reliability rules, and pseudocode. Feeds Phases 2–3 (`src/carries.ts`, policy).
 
-## Where we are: Phase 0 built, NOT yet live-verified
+## Where we are: Phase 0 LIVE-VERIFIED ✓; Phases 1–2 done; Phase 3 brain done
+
+**Phase 0 is verified against real browser-rendered PokéRogue** (`npm run smoke` —
+`harness/smoke.mjs` boots the local dev server build in Playwright Chromium, injects
+`dist/…user.js`, and exercises the bridge). Confirmed on Phaser v3.90 / software WebGL:
+scene acquired via the CanvasPool walk, `battleShaped`, `snapshot.ready`, and — the big one —
+**UI-mode mapping has NO drift across all 48 live handlers** (mode 0→MESSAGE/BattleMessageUiHandler,
+etc.). The two version-fragile assumptions in `bridge.ts` hold on a real build. To re-run after a
+game update: start the dev server (`cd <pokerogue checkout> && VITE_BYPASS_LOGIN=1 npx vite --mode
+development --host 127.0.0.1 --port 8000`), then `npm run smoke`. Still live-unverified: input
+DRIVING and the title→starter-select EXECUTION glue (build them on this smoke harness next).
+
+## (historical) Phase 0 built, not yet live-verified
 
 The plan is a 5-phase, MVP-first build of an unattended Classic-mode bot that ribbons every
 starter. Full rationale + mechanics are in `README.md` and `docs/PLAN.md`. Roadmap below.

@@ -8,7 +8,8 @@
     "watch": "node build.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "smoke": "node build.mjs && node harness/smoke.mjs"
   },
   "license": "AGPL-3.0-only",
   "devDependencies": {
