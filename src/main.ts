@@ -21,7 +21,8 @@ import { sleep, actionsSentCount, press } from "./input";
 import { Button, type ButtonName } from "./bridge";
 import { step as policyStep } from "./policy";
 import { decideLoopAction } from "./runloop";
-import { driveStartRun } from "./execution";
+import { driveStartRun, driveStarterSelect, resetStarterSelect } from "./execution";
+import { getCurrentPhaseName } from "./bridge";
 import { planRun } from "./orchestrator";
 import { readRoster } from "./roster";
 
@@ -35,6 +36,16 @@ let announcedDone = false;
  * starter-select screen to the team driver. Composes the whole bot.
  */
 async function tick(snap: GameSnapshot): Promise<void> {
+  // The starter-select phase spans several UI sub-modes (grid, add-to-party menu, start confirm,
+  // save-slot) that decideLoopAction can't tell apart by mode alone — route the whole phase to the
+  // team driver. Outside it, drop the cached plan so the next run re-plans from fresh ribbons.
+  const phase = getCurrentPhaseName();
+  if (phase === "SelectStarterPhase") {
+    if (config.enabled) await driveStarterSelect(snap);
+    return;
+  }
+  resetStarterSelect();
+
   const inRun = snap.battle != null;
   // Reading the roster is only meaningful at the title (deciding whether we're done).
   const objectiveDone = snap.uiMode === "TITLE" ? planRun(readRoster()).done : false;
@@ -48,7 +59,7 @@ async function tick(snap: GameSnapshot): Promise<void> {
       await driveStartRun(snap);
       return;
     case "SELECT_TEAM":
-      // driveStarterSelect(snap) — built next; for now the bot waits at starter select.
+      await driveStarterSelect(snap); // fallback if the phase name was unreadable
       return;
     case "STOP_DONE":
       if (!announcedDone) {

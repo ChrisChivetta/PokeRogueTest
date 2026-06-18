@@ -9,6 +9,9 @@
 import type { GameSnapshot } from "./state";
 import { Button, getActiveHandler } from "./bridge";
 import { press } from "./input";
+import { readRoster } from "./roster";
+import { selectTeam } from "./team";
+import { log } from "./log";
 
 /** Labels of the active option/title menu, lowercased; [] if unreadable. */
 function menuLabels(): string[] {
@@ -51,4 +54,85 @@ export async function driveStartRun(s: GameSnapshot): Promise<void> {
     }
   }
   // Other screens (SAVE_SLOT, loading) → wait for the next tick.
+}
+
+// ── Starter select: enact the team plan ──────────────────────────────────────
+// The StarterSelectPhase spans several UI sub-modes (the grid, the per-mon add-to-party
+// OPTION_SELECT, the start CONFIRM, the SAVE_SLOT). We route ALL of them here (by phase name) and
+// drive: scan the 9-col grid to each planned species (reading filteredStarterContainers[cursor]),
+// add it, then SUBMIT to start. The grid is a flat list: DOWN/UP = ±9, LEFT/RIGHT = ±1.
+// (Candy value-reductions are a later refinement — selecting + starting is the core.)
+
+let planIds: number[] | null = null;
+
+/** Drop the cached team plan (call when leaving starter select / between runs). */
+export function resetStarterSelect(): void {
+  planIds = null;
+}
+
+/** The planned team's species ids, computed once per starter-select visit from the live roster. */
+function teamPlan(): number[] {
+  if (!planIds) {
+    const plan = selectTeam(readRoster());
+    planIds = plan.team.map((s) => s.speciesId);
+    log.info(`[starter] plan: [${planIds.join(", ")}] (carry #${plan.carry?.speciesId ?? "?"})`);
+  }
+  return planIds;
+}
+
+export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
+  const h = getActiveHandler();
+  if (!h) return;
+
+  // Sub-screens that pop over the grid while starting.
+  if (s.uiMode === "CONFIRM") { await press(Button.ACTION, "starter:confirm-start"); return; }
+  if (s.uiMode === "SAVE_SLOT") { await press(Button.ACTION, "starter:save-slot"); return; }
+  if (s.uiMode === "OPTION_SELECT") {
+    // The per-mon menu — pick "Add to Party" (first option), navigating to it if needed.
+    const labels: string[] = Array.isArray(h.config?.options)
+      ? h.config.options.map((o: any) => (typeof o?.label === "string" ? o.label.toLowerCase() : ""))
+      : [];
+    let target = labels.findIndex((l) => l.includes("add to party") || l.includes("add to the party"));
+    if (target < 0) target = 0;
+    await pickVerticalOption(s.cursor ?? 0, target, "starter:addmenu");
+    return;
+  }
+  if (s.uiMode !== "STARTER_SELECT") return; // transitional — wait
+
+  const containers: any[] = Array.isArray(h.filteredStarterContainers) ? h.filteredStarterContainers : [];
+  const teamIds: number[] = Array.isArray(h.starterSpecies)
+    ? h.starterSpecies.map((sp: any) => sp?.speciesId).filter((x: any) => typeof x === "number")
+    : [];
+  const idxOf = (id: number) => containers.findIndex((c) => c?.species?.speciesId === id);
+
+  // Planned species still to add that are actually present in the (filtered) grid.
+  const remaining = teamPlan().filter((id) => !teamIds.includes(id) && idxOf(id) >= 0);
+
+  // If somehow on the start/random/filter context, step back into the grid first.
+  if (h.filterMode === true) { await press(Button.CANCEL, "starter:exit-filter"); return; }
+  const onStartBtn = h.startCursorObj?.visible === true || h.randomCursorObj?.visible === true;
+
+  // Team complete (or nothing addable) → start the run via SUBMIT.
+  if ((remaining.length === 0 && teamIds.length > 0) || teamIds.length >= 6) {
+    await press(Button.SUBMIT, "starter:start");
+    return;
+  }
+  if (onStartBtn) { await press(Button.LEFT, "starter:to-grid"); return; }
+
+  // Degenerate safety: nothing planned is addable and team is empty → add whatever's at the cursor.
+  if (remaining.length === 0) { await press(Button.ACTION, "starter:add-fallback"); return; }
+
+  // Navigate the grid toward the next target species, then ACTION to open its add menu.
+  const target = remaining[0];
+  const cur = typeof h.cursor === "number" ? h.cursor : 0;
+  const idx = idxOf(target);
+  if (cur === idx) { await press(Button.ACTION, "starter:open-add"); return; }
+  const COLS = 9;
+  const [cr, cc] = [Math.floor(cur / COLS), cur % COLS];
+  const [tr, tc] = [Math.floor(idx / COLS), idx % COLS];
+  if (cr < tr) { await press(Button.DOWN, "starter:nav-down"); return; }
+  if (cr > tr) { await press(Button.UP, "starter:nav-up"); return; }
+  if (cc < tc) { await press(Button.RIGHT, "starter:nav-right"); return; }
+  if (cc > tc) { await press(Button.LEFT, "starter:nav-left"); return; }
+  await press(Button.ACTION, "starter:open-add");
 }

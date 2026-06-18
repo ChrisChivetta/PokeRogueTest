@@ -328,6 +328,16 @@ export function inMysteryEncounter(): boolean {
   return getMysteryEncounter() != null;
 }
 
+/**
+ * Name of the phase currently running, or null. Phases expose a `phaseName` string literal that
+ * survives minification (unlike the class name), so this is reliable on the live build. Used to
+ * scope the starter-select driver (the SelectStarterPhase spans several UI sub-modes).
+ */
+export function getCurrentPhaseName(): string | null {
+  const p = getScene()?.phaseManager?.getCurrentPhase?.();
+  return (typeof p?.phaseName === "string" ? p.phaseName : p?.constructor?.name) ?? null;
+}
+
 /** Reset the cached scene. Call if the bridge starts returning stale/dead handles. */
 export function resetBridge(): void {
   cached = null;
