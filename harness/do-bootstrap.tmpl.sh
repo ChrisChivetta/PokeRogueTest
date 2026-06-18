@@ -19,6 +19,11 @@ apt-get install -y nodejs
 # Claude's --dangerously-skip-permissions refuses to run as root, so do everything as 'bot'.
 id bot &>/dev/null || useradd -m -s /bin/bash bot
 echo "bot ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/bot
+# DO installs your SSH key on root only — copy it to bot so `ssh bot@<ip>` works.
+install -d -o bot -g bot -m 700 /home/bot/.ssh
+cp /root/.ssh/authorized_keys /home/bot/.ssh/authorized_keys 2>/dev/null || true
+chown bot:bot /home/bot/.ssh/authorized_keys 2>/dev/null || true
+chmod 600 /home/bot/.ssh/authorized_keys 2>/dev/null || true
 
 sudo -u bot -H bash <<'BOT'
 set -x
