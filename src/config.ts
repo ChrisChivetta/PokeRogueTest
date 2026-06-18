@@ -28,6 +28,20 @@ export interface Config {
   catchNewSpecies: boolean;
   /** Max ball throws at one catch target before giving up and KO-ing it. */
   catchAttemptsPerTarget: number;
+
+  /**
+   * Spend candy to reduce starter costs during select (the planCandy decisions). EXPERIMENTAL:
+   * the decision logic is tested, but reliably driving the "Use Candies" sub-menus on the live
+   * grid still needs work, so it's off by default. The loop runs fine without it.
+   */
+  applyCandyReductions: boolean;
+
+  /**
+   * With the game's retry-on-defeat setting ON, retry a lost wave this many times — each retry
+   * VARIES the bot's play (a different move ordering) so it isn't the same losing line. 0 = never
+   * retry (just take the game over). Only matters if the player has retries enabled.
+   */
+  maxRetriesPerWave: number;
 }
 
 export type LogLevel = "silent" | "info" | "debug";
@@ -43,4 +57,6 @@ export const config: Config = {
   maxWallClockPerRunMs: 60 * 60 * 1000, // 1h per run ceiling
   catchNewSpecies: true,
   catchAttemptsPerTarget: 3,
+  applyCandyReductions: false, // experimental — see note above
+  maxRetriesPerWave: 3,
 };

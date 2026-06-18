@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { effectiveness, bestMoveIndex } from "../src/typechart";
+import { effectiveness, bestMoveIndex, rankedMoves } from "../src/typechart";
 import type { MoveSnapshot, PokemonSnapshot } from "../src/state";
 
 // Minimal builders — only the fields the type logic reads.
@@ -97,5 +97,33 @@ describe("bestMoveIndex", () => {
     ]);
     const foe = mon([], []);
     expect(bestMoveIndex(lead, foe)).toBe(1);
+  });
+});
+
+describe("rankedMoves", () => {
+  it("ranks damaging moves best-first, with status moves last", () => {
+    const lead = mon(["water"], [
+      move({ index: 0, type: "normal", power: 40 }), // 40
+      move({ index: 1, type: "water", power: 55 }), // 110 vs ground (best)
+      move({ index: 2, type: "normal", power: 0 }), // status → last
+    ]);
+    const foe = mon(["ground"], []);
+    expect(rankedMoves(lead, foe)).toEqual([1, 0, 2]);
+  });
+
+  it("drops 0-PP moves and supports picking the Nth-best (retry variation)", () => {
+    const lead = mon([], [
+      move({ index: 0, type: "normal", power: 50 }),
+      move({ index: 1, type: "normal", power: 80, pp: 0 }), // unusable
+      move({ index: 2, type: "normal", power: 60 }),
+    ]);
+    const ranked = rankedMoves(lead, mon([], []));
+    expect(ranked).toEqual([2, 0]); // 60 then 50; the 80-power move is out of PP
+    // The retry layer would pick ranked[gen % len] — e.g. gen 1 → the 2nd-best.
+    expect(ranked[1 % ranked.length]).toBe(0);
+  });
+
+  it("returns empty when nothing is usable", () => {
+    expect(rankedMoves(mon([], []), mon([], []))).toEqual([]);
   });
 });

@@ -20,16 +20,18 @@ import { mountHud, updateHud } from "./hud";
 import { sleep, actionsSentCount, press } from "./input";
 import { Button, type ButtonName } from "./bridge";
 import { step as policyStep } from "./policy";
-import { decideLoopAction } from "./runloop";
+import { decideLoopAction, isServerTrouble } from "./runloop";
 import { driveStartRun, driveStarterSelect, resetStarterSelect } from "./execution";
 import { getCurrentPhaseName } from "./bridge";
 import { planRun, summarizeProgress } from "./orchestrator";
 import { readRoster } from "./roster";
 import { checkRunSafety, resetSafety } from "./safety";
+import { shouldRetry, noteRetry, retryGeneration, resetRetry, noteWave } from "./retry";
 
 let looping = false;
 let lastSummary = "";
 let lastProgress = "";
+let lastTrouble = 0;
 let announcedDone = false;
 
 /**
@@ -38,10 +40,35 @@ let announcedDone = false;
  * starter-select screen to the team driver. Composes the whole bot.
  */
 async function tick(snap: GameSnapshot): Promise<void> {
+  // Server/connection trouble (live site backend drops out often): the game auto-reconnects, so
+  // idle and let it recover — never mash. Log at most once every 15s so it's visible but quiet.
+  if (isServerTrouble(snap.uiMode)) {
+    if (Date.now() - lastTrouble > 15_000) {
+      lastTrouble = Date.now();
+      log.warn(`[net] ${snap.uiMode} — server/connection trouble; waiting for the game to reconnect.`);
+    }
+    return;
+  }
+
+  const phase = getCurrentPhaseName();
+
+  // Game over with the retry setting on: the game offers to replay the wave. Retry — the battle
+  // policy varies its line each generation (see retry.ts / FIGHT) — up to the cap, else give up.
+  if (phase === "GameOverPhase" && snap.uiMode === "CONFIRM") {
+    if (shouldRetry()) {
+      noteRetry();
+      log.info(`[retry] lost — retrying the wave (attempt ${retryGeneration()}, varied strategy).`);
+      await press(Button.ACTION, "retry");
+    } else {
+      log.info("[retry] out of retries — taking the game over and re-planning.");
+      await press(Button.CANCEL, "retry:give-up");
+    }
+    return;
+  }
+
   // The starter-select phase spans several UI sub-modes (grid, add-to-party menu, start confirm,
   // save-slot) that decideLoopAction can't tell apart by mode alone — route the whole phase to the
   // team driver. Outside it, drop the cached plan so the next run re-plans from fresh ribbons.
-  const phase = getCurrentPhaseName();
   if (phase === "SelectStarterPhase") {
     if (config.enabled) await driveStarterSelect(snap);
     return;
@@ -50,8 +77,9 @@ async function tick(snap: GameSnapshot): Promise<void> {
 
   const inRun = snap.battle != null;
 
-  // Dead-man's switch: halt a wedged run (stuck wave / blown wall-clock) instead of spinning.
+  // Dead-man's switch + retry budget tracking, scoped to an active run.
   if (inRun) {
+    noteWave(snap.battle?.waveIndex); // resets the retry budget when we progress to a new wave
     const verdict = checkRunSafety(snap);
     if (verdict.halt) {
       log.banner(`SAFETY HALT — ${verdict.reason}. Stopping (autoRibbon.start() to resume).`);
@@ -60,6 +88,7 @@ async function tick(snap: GameSnapshot): Promise<void> {
     }
   } else {
     resetSafety(); // fresh caps for the next run
+    resetRetry(); // fresh retry budget for the next run
   }
 
   // At the title, log ribbon progress (deduped) and decide whether the objective is complete.

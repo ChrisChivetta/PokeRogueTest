@@ -35,6 +35,19 @@ const BATTLE_MODES = new Set([
 // during title navigation (gender prompt, game-mode submenu, intro). `inRun` picks which.
 const SHARED_MODES = new Set(["OPTION_SELECT", "CONFIRM", "MESSAGE"]);
 
+// Server / connection-trouble screens. On the live site the backend drops out often; the game
+// shows one of these and AUTO-reconnects (the Unavailable modal backs off exponentially), so the
+// bot must WAIT — never mash an input — and let it recover. Also covers being bounced to login if
+// the session drops, and the mid-run session reload.
+const SERVER_TROUBLE_MODES = new Set([
+  "UNAVAILABLE", "SESSION_RELOAD", "LOGIN_OR_REGISTER", "LOGIN_FORM", "REGISTRATION_FORM",
+]);
+
+/** True on a server/connection-trouble screen — the bot should idle and let the game reconnect. */
+export function isServerTrouble(uiMode: string): boolean {
+  return SERVER_TROUBLE_MODES.has(uiMode);
+}
+
 /**
  * Route the current screen to a high-level action. Deterministic and side-effect free. The run
  * lifecycle falls out naturally: a finished run (win OR wipe) returns to the TITLE, where — unless

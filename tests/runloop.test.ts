@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decideLoopAction, type LoopContext } from "../src/runloop";
+import { decideLoopAction, isServerTrouble, type LoopContext } from "../src/runloop";
 
 const ctx = (o: Partial<LoopContext>): LoopContext =>
   ({ uiMode: "MESSAGE", objectiveDone: false, enabled: true, inRun: true, ...o });
@@ -43,5 +43,18 @@ describe("decideLoopAction", () => {
   it("does nothing anywhere when the kill-switch is off", () => {
     expect(decideLoopAction(ctx({ uiMode: "TITLE", enabled: false }))).toBe("WAIT");
     expect(decideLoopAction(ctx({ uiMode: "COMMAND", enabled: false }))).toBe("WAIT");
+  });
+});
+
+describe("isServerTrouble", () => {
+  it("flags the server/connection screens the bot must idle through", () => {
+    for (const m of ["UNAVAILABLE", "SESSION_RELOAD", "LOGIN_OR_REGISTER", "LOGIN_FORM", "REGISTRATION_FORM"]) {
+      expect(isServerTrouble(m)).toBe(true);
+    }
+  });
+  it("does not flag normal gameplay screens", () => {
+    for (const m of ["COMMAND", "TITLE", "STARTER_SELECT", "MESSAGE", "MODIFIER_SELECT"]) {
+      expect(isServerTrouble(m)).toBe(false);
+    }
   });
 });

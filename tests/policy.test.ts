@@ -22,6 +22,7 @@ vi.mock("../src/bridge", async (orig) => {
 });
 
 import { resetPolicy, step } from "../src/policy";
+import { resetRetry, noteRetry } from "../src/retry";
 import type { GameSnapshot } from "../src/state";
 
 const snap = (o: Partial<GameSnapshot>): GameSnapshot =>
@@ -31,7 +32,7 @@ const snap = (o: Partial<GameSnapshot>): GameSnapshot =>
 const p = (o: any) => ({ name: "p", fainted: false, hpRatio: 1, onField: false, types: [], moves: [], ...o });
 
 // Button values (from bridge): UP0 DOWN1 LEFT2 RIGHT3 SUBMIT4 ACTION5 CANCEL6
-beforeEach(() => { rec.presses = []; hRef.current = null; meRef.current = null; resetPolicy(); });
+beforeEach(() => { rec.presses = []; hRef.current = null; meRef.current = null; resetPolicy(); resetRetry(); });
 
 // Build a fake MysteryEncounterUiHandler. `modes`/`reqs` describe each option; cursor is
 // the current grid position. Mirrors the real handler's getCursor()/encounterOptions/
@@ -86,6 +87,17 @@ describe("policy routing", () => {
     const foe = p({ onField: true, types: ["ground"] });
     await step(snap({ uiMode: "FIGHT", cursor: 0, playerParty: [lead], enemyParty: [foe] }));
     expect(rec.presses).toEqual(["nav:0->1", "5:fight:move1"]);
+  });
+
+  it("FIGHT varies the move on a retry (picks the 2nd-best after a loss)", async () => {
+    const lead = p({ onField: true, types: ["grass"], moves: [
+      { index: 0, type: "normal", power: 40, pp: 10 },
+      { index: 1, type: "water", power: 55, pp: 10 }, // best vs ground
+    ]});
+    const foe = p({ onField: true, types: ["ground"] });
+    noteRetry(); // generation 1 → take the 2nd-best move instead of replaying the best
+    await step(snap({ uiMode: "FIGHT", cursor: 0, playerParty: [lead], enemyParty: [foe] }));
+    expect(rec.presses).toEqual(["5:fight:move0"]); // 2nd-best is move 0; cursor already there
   });
 
   it("MODIFIER_SELECT takes the reward when the row is unreadable", async () => {

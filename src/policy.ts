@@ -19,9 +19,10 @@
 import type { GameSnapshot } from "./state";
 import { Button, getActiveHandler, getMysteryEncounter, inMysteryEncounter } from "./bridge";
 import { press, moveCursor2x2 } from "./input";
-import { bestMoveIndex } from "./typechart";
 import { shouldCatch, pickBall, noteCatchAttempt, resetCatch } from "./catch";
 import { bestRewardIndex, type RewardOption } from "./rewards";
+import { rankedMoves } from "./typechart";
+import { retryGeneration } from "./retry";
 
 const onField = (party: GameSnapshot["playerParty"]) => party.find((p) => p.onField) ?? party[0];
 
@@ -57,9 +58,11 @@ export async function step(s: GameSnapshot): Promise<void> {
 
     case "FIGHT": {
       const lead = onField(s.playerParty);
-      // Out of PP on every move → don't back out (that loops COMMAND↔FIGHT); select the
-      // first slot and let the game force Struggle.
-      const idx = bestMoveIndex(lead, onField(s.enemyParty)) ?? lead?.moves[0]?.index ?? 0;
+      // Pick the best move — but on a retry, vary it: the Nth-best move on the Nth retry, so we
+      // don't replay the exact line that just lost. Out of PP on everything → first slot (Struggle).
+      const ranked = rankedMoves(lead, onField(s.enemyParty));
+      const gen = retryGeneration();
+      const idx = ranked.length ? ranked[gen % ranked.length] : (lead?.moves[0]?.index ?? 0);
       const cur = s.cursor ?? 0;
       if (cur !== idx) await moveCursor2x2(cur, idx);
       await press(Button.ACTION, `fight:move${idx}`);

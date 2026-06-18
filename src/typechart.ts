@@ -63,3 +63,25 @@ export function bestMoveIndex(lead: PokemonSnapshot | undefined, foe: PokemonSna
 
   return bestIdx ?? statusFallback;
 }
+
+/**
+ * All usable move indices ranked best-first (same scoring as bestMoveIndex). Damaging moves
+ * (by effectiveness × power) come before status moves; 0-PP moves are dropped. Lets the retry
+ * logic pick the Nth-best move to vary a losing line. Empty if nothing's usable.
+ */
+export function rankedMoves(lead: PokemonSnapshot | undefined, foe: PokemonSnapshot | undefined): number[] {
+  if (!lead || lead.moves.length === 0) return [];
+  const foeTypes = foe?.types ?? [];
+
+  const damaging: { index: number; score: number }[] = [];
+  const status: number[] = [];
+  for (const m of lead.moves as MoveSnapshot[]) {
+    if (m.pp != null && m.pp <= 0) continue;
+    const power = m.power ?? 0;
+    if (power <= 0) { status.push(m.index); continue; }
+    const eff = m.type ? effectiveness(m.type, foeTypes) : 1;
+    damaging.push({ index: m.index, score: eff * power });
+  }
+  damaging.sort((a, b) => b.score - a.score || a.index - b.index);
+  return [...damaging.map((d) => d.index), ...status];
+}

@@ -134,11 +134,23 @@ Only after reads are confirmed do we wire inputs.
     SUBMIT mash that restarted the (mode-less) confirm-start message before its CONFIRM could open
     (now a 3s submit cooldown). GameManager can't test any of this (upstream's own starter-select
     UI test is `describe.todo`), so the smoke harness IS the test.
-  - **Still open in Phase 3:** candy value-reductions DURING starter select (the `planCandy`
-    decisions exist; applying them via the "Use Candies" sub-menu is unbuilt); progress
-    persistence / a run-count log; and the safety caps (`maxTurnsPerWave`, wall-clock). The
-    cross-run LOOP itself already falls out — a finished run returns to TITLE → START_RUN again,
-    or STOP_DONE when every owned line is ribboned.
+  - **Safety + progress ✓ done** — `src/safety.ts` `checkRunSafety()` halts (kill-switch) a wedged
+    run (a wave running > `config.maxTurnsPerWave`, or a run over `maxWallClockPerRunMs`); `tick()`
+    logs deduped ribbon progress at the title. Unit-tested.
+  - **Retry strategy ✓ done** — `src/retry.ts` + `tick()` + the FIGHT case. With the game's
+    retry-on-defeat setting ON, a loss prompts a replay; the bot accepts up to
+    `config.maxRetriesPerWave` retries and VARIES its line each generation — `typechart.rankedMoves`
+    + `retryGeneration()` pick the Nth-best move on the Nth retry, so it isn't the same losing line.
+    Budget resets on progress to a new wave. Unit-tested (`tests/retry.test.ts`).
+  - **Server-down resilience ✓ done** — `runloop.isServerTrouble()` flags the connection screens
+    (UNAVAILABLE / SESSION_RELOAD / LOGIN_*); the bot idles and lets the game's auto-reconnect (the
+    Unavailable modal backs off exponentially) recover — never mashing. Unit-tested.
+  - **Candy application ⚠ experimental (off)** — `config.applyCandyReductions` (default false). The
+    `planCandy` DECISIONS are correct + unit-tested, but reliably driving the "Use Candies" →
+    "Reduce Cost" sub-menus on the live grid is still flaky (six harness iterations: the cursor
+    reaches the target but the per-mon menu won't open from the initial cursor — a `setSpecies`/
+    focus quirk that needs fresh instrumentation). The candy phase safely falls through, so the
+    loop is unaffected. Re-enable + finish driving it as a follow-up.
 - **Phase 4** — hardening: edge cases (doubles, odd encounters, shop variants), recovery from a
   lost run, local-instance fallback (`@match localhost`). *Verify: long unattended session.*
   - **Mystery encounters ✓ done** — detection (UI mode `MYSTERY_ENCOUNTER`) + resolution in

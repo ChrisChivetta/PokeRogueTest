@@ -9,6 +9,7 @@
 import type { GameSnapshot } from "./state";
 import { Button, getActiveHandler } from "./bridge";
 import { press } from "./input";
+import { config } from "./config";
 import { readRoster, readCandyStarters } from "./roster";
 import { selectTeam } from "./team";
 import { planCandy } from "./candy";
@@ -70,8 +71,7 @@ export async function driveStartRun(s: GameSnapshot): Promise<void> {
 let planIds: number[] | null = null;
 let candyDone = false;
 let candyAttempts = 0;
-let candyLogged = false;
-let lastMenuLog = "";
+let settledIdx = -1; // grid index we've confirmed the cursor moved onto (so setSpecies has fired)
 // Bounds the candy phase so a mis-navigation can't loop forever before we move on to the team.
 const MAX_CANDY_ATTEMPTS = 40;
 
@@ -87,7 +87,7 @@ export function resetStarterSelect(): void {
   planIds = null;
   candyDone = false;
   candyAttempts = 0;
-  candyLogged = false;
+  settledIdx = -1;
   lastSubmitAt = 0;
 }
 
@@ -115,10 +115,6 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
     const find = (needle: string) => labels.findIndex((l) => l.includes(needle));
 
     if (!candyDone) {
-      if (labels.join("|") !== lastMenuLog) {
-        lastMenuLog = labels.join("|");
-        log.info(`[starter] candy menu: [${labels.join(" | ")}] cursor=${s.cursor}`);
-      }
       // Candy sub-flow: in the per-mon menu pick "Use Candies"; in the candy menu pick "Reduce
       // Cost". If the candy menu has no reduction left (maxed/unaffordable), back out to re-plan.
       const reduce = find("reduce cost");
@@ -147,26 +143,18 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
   // ── Phase 1: spend candy to shave starter costs (carries first), before planning the team so
   // the cheaper carry frees budget. Each affordable reduction is applied via that mon's menu;
   // gameData updates after each, so planCandy naturally shrinks until nothing's left.
+  if (!candyDone && !config.applyCandyReductions) {
+    candyDone = true; // candy application disabled (experimental) → straight to team building
+  }
   if (!candyDone) {
     const pending = planCandy(readCandyStarters());
-    if (!candyLogged) {
-      candyLogged = true;
-      log.info(`[starter] candy plan: ${pending.length} reduction(s) pending`);
-    }
     if (pending.length === 0 || candyAttempts >= MAX_CANDY_ATTEMPTS) {
       candyDone = true; // every reduction applied (or we've tried enough) → build the team
     } else {
       candyAttempts++;
       const next = pending.find((a) => idxOf(a.speciesId) >= 0);
-      const idx = next ? idxOf(next.speciesId) : -1;
-      const cur = h.cursor ?? 0;
-      const onBtn = h.startCursorObj?.visible === true || h.randomCursorObj?.visible === true;
-      if (candyAttempts % 4 === 1) log.info(`[starter] candy nav: cur=${cur} idx=${idx} mon=${next ? "#" + next.speciesId : "none"} onBtn=${onBtn}`);
-      if (idx < 0) return; // pending but not reachable this tick — wait, don't latch candyDone
-      // Ensure we're in the grid (the cursor can default to the start/random button on entry).
-      if (onBtn) { await press(Button.LEFT, "starter:candy-to-grid"); return; }
-      if (cur === idx) { await press(Button.ACTION, "starter:open-candy-menu"); return; }
-      await stepGridTo(h, idx);
+      if (!next) return; // pending but not reachable this tick — wait, don't latch candyDone
+      await approachAndOpen(h, idxOf(next.speciesId), "starter:open-candy-menu");
       return;
     }
   }
@@ -178,8 +166,6 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
   // Planned species still to add that are actually present in the (filtered) grid.
   const remaining = teamPlan().filter((id) => !teamIds.includes(id) && idxOf(id) >= 0);
 
-  const onStartBtn = h.startCursorObj?.visible === true || h.randomCursorObj?.visible === true;
-
   // Team complete (or nothing addable) → start the run via SUBMIT, then wait out the confirm-start
   // message (which leaves getMode() on STARTER_SELECT) so we don't restart it. The CONFIRM it opens
   // is handled above; if it never appears we retry after the cooldown.
@@ -189,19 +175,39 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
     await press(Button.SUBMIT, "starter:start");
     return;
   }
-  if (onStartBtn) { await press(Button.LEFT, "starter:to-grid"); return; }
 
   // Degenerate safety: nothing planned is addable and team is empty → add whatever's at the cursor.
   if (remaining.length === 0) { await press(Button.ACTION, "starter:add-fallback"); return; }
 
-  // Navigate to the next target species, then ACTION to open its add menu.
-  const idx = idxOf(remaining[0]);
-  if ((h.cursor ?? 0) === idx) { await press(Button.ACTION, "starter:open-add"); return; }
-  await stepGridTo(h, idx);
+  await approachAndOpen(h, idxOf(remaining[0]), "starter:open-add");
 }
 
-/** Grid steps taken per driveStarterSelect call (re-reading the cursor each step). */
+/** Grid steps taken per approachAndOpen call (re-reading the cursor each step). */
 const GRID_STEPS_PER_TICK = 8;
+
+/**
+ * Move the cursor onto the grid species at `idx` and ACTION to open its menu. Subtleties:
+ *  • on entry the focus can default to the start/random button — step LEFT into the grid first;
+ *  • the handler only sets its `lastSpecies`/dex entry on cursor MOVEMENT (setSpecies), so if we
+ *    START already on the target, ACTION opens nothing — we nudge off-and-back so the arrival
+ *    fires setSpecies before we press ACTION.
+ */
+async function approachAndOpen(h: any, idx: number, why: string): Promise<void> {
+  if (h.startCursorObj?.visible === true || h.randomCursorObj?.visible === true) {
+    settledIdx = -1;
+    await press(Button.LEFT, "starter:to-grid");
+    return;
+  }
+  const cur = typeof h.cursor === "number" ? h.cursor : 0;
+  if (cur !== idx) { settledIdx = idx; await stepGridTo(h, idx); return; }
+  if (settledIdx !== idx) {
+    // We started on the target without moving — nudge off so the return trip fires setSpecies.
+    settledIdx = idx;
+    await press(idx % 9 === 8 ? Button.LEFT : Button.RIGHT, "starter:settle");
+    return;
+  }
+  await press(Button.ACTION, why);
+}
 
 /**
  * Walk the starter grid cursor toward index `idx`, several steps per call (re-reading the live
