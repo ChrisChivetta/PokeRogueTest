@@ -14,6 +14,10 @@ const browser = await chromium.launch({
   args: ["--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader", "--no-sandbox", "--disable-dev-shm-usage"],
 });
 const page = await browser.newPage();
+page.on("console", (m) => {
+  const t = m.text();
+  if (t.includes("[starter] candy plan")) log("BOT:", t.replace(/%c|color:[^ ]+|font-weight:bold/g, "").trim());
+});
 let failed = false;
 try {
   await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120_000 });

@@ -70,6 +70,7 @@ export async function driveStartRun(s: GameSnapshot): Promise<void> {
 let planIds: number[] | null = null;
 let candyDone = false;
 let candyAttempts = 0;
+let candyLogged = false;
 // Bounds the candy phase so a mis-navigation can't loop forever before we move on to the team.
 const MAX_CANDY_ATTEMPTS = 40;
 
@@ -85,6 +86,7 @@ export function resetStarterSelect(): void {
   planIds = null;
   candyDone = false;
   candyAttempts = 0;
+  candyLogged = false;
   lastSubmitAt = 0;
 }
 
@@ -132,6 +134,7 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
   if (s.uiMode !== "STARTER_SELECT") return; // transitional — wait
 
   const containers: any[] = Array.isArray(h.filteredStarterContainers) ? h.filteredStarterContainers : [];
+  if (containers.length === 0) return; // grid not populated yet — wait (don't latch candyDone)
   const idxOf = (id: number) => containers.findIndex((c) => c?.species?.speciesId === id);
 
   if (h.filterMode === true) { await press(Button.CANCEL, "starter:exit-filter"); return; }
@@ -142,6 +145,10 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
   if (!candyDone) {
     const pending = planCandy(readCandyStarters());
     const next = pending.find((a) => idxOf(a.speciesId) >= 0);
+    if (!candyLogged) {
+      candyLogged = true;
+      log.info(`[starter] candy plan: ${pending.length} reduction(s); next reachable: ${next ? "#" + next.speciesId : "none"}`);
+    }
     if (!next || candyAttempts >= MAX_CANDY_ATTEMPTS) {
       candyDone = true; // nothing affordable/reachable (or we've tried enough) → build the team
     } else {
