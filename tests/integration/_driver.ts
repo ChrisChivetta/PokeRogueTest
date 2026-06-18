@@ -1,7 +1,7 @@
 // Shared helpers for the auto-ribbon integration tests: configure the bot for
 // synchronous test driving and run our real policy against the live (headless) scene.
 // Imported by the *.test.ts files after staging into the PokéRogue checkout.
-import { __setSceneForTest } from "./bot/bridge";
+import { __setSceneForTest, getActiveHandler } from "./bot/bridge";
 import { config } from "./bot/config";
 import { step } from "./bot/policy";
 import { readState } from "./bot/state";
@@ -36,6 +36,10 @@ export function driveBot(maxSteps = 40): number {
   for (; i < maxSteps; i++) {
     const s = readState();
     if (!s.ready || !ACTIONABLE.has(s.uiMode)) break;
+    if (process.env.BOT_TRACE && s.uiMode === "PARTY") {
+      const h: any = getActiveHandler();
+      process.stderr.write(`PARTY om=${h?.optionsMode} opts=[${h?.options}] oc=${h?.optionsCursor} cur=${h?.cursor} pum=${h?.partyUiMode}\n`);
+    }
     void step(s);
   }
   return i;

@@ -15,7 +15,7 @@ vi.mock("../src/bridge", async (orig) => {
   return { ...actual, getActiveHandler: () => hRef.current };
 });
 
-import { step } from "../src/policy";
+import { resetPolicy, step } from "../src/policy";
 import type { GameSnapshot } from "../src/state";
 
 const snap = (o: Partial<GameSnapshot>): GameSnapshot =>
@@ -25,7 +25,7 @@ const snap = (o: Partial<GameSnapshot>): GameSnapshot =>
 const p = (o: any) => ({ name: "p", fainted: false, hpRatio: 1, onField: false, types: [], moves: [], ...o });
 
 // Button values (from bridge): UP0 DOWN1 LEFT2 RIGHT3 SUBMIT4 ACTION5 CANCEL6
-beforeEach(() => { rec.presses = []; hRef.current = null; });
+beforeEach(() => { rec.presses = []; hRef.current = null; resetPolicy(); });
 
 describe("policy routing", () => {
   it("does nothing when not ready", async () => {
@@ -94,10 +94,24 @@ describe("PARTY option targeting (the previously-buggy path)", () => {
     expect(rec.presses).toEqual(["5:party:select-option"]); // already on APPLY (index 1)
   });
 
-  it("backs out if neither SEND_OUT nor APPLY is offered (e.g. check-team)", async () => {
-    hRef.current = { optionsMode: true, options: [6, -1], optionsCursor: 0 }; // [SUMMARY, CANCEL]
+  it("abandons a reward whose target menu offers neither SEND_OUT nor APPLY (e.g. a TM)", async () => {
+    hRef.current = { optionsMode: true, options: [4, 6, -1], optionsCursor: 0 }; // [TEACH, SUMMARY, CANCEL]
     await step(snap({ uiMode: "PARTY" }));
-    expect(rec.presses).toEqual(["6:party:no-action-option"]);
+    expect(rec.presses).toEqual(["6:party:abandon-options"]);
+  });
+
+  it("after abandoning, skips the reward at MODIFIER_SELECT (CANCEL then accept the confirm)", async () => {
+    // 1) abandon the TM target menu → sets the skip flag
+    hRef.current = { optionsMode: true, options: [4, -1], optionsCursor: 0 };
+    await step(snap({ uiMode: "PARTY" }));
+    rec.presses = [];
+    // 2) at the reward screen we now CANCEL (open "skip?")
+    await step(snap({ uiMode: "MODIFIER_SELECT" }));
+    expect(rec.presses).toEqual(["6:reward:skip"]);
+    rec.presses = [];
+    // 3) the skip confirmation is ACCEPTED (not declined like a learn-move confirm)
+    await step(snap({ uiMode: "CONFIRM" }));
+    expect(rec.presses).toEqual(["5:confirm:accept-skip"]);
   });
 
   it("opens options on the healthiest usable member", async () => {

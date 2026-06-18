@@ -49,8 +49,15 @@ export async function step(s: GameSnapshot): Promise<void> {
       return;
 
     case "MODIFIER_SELECT":
-      // Take the highlighted reward. ACTION selects it; if it needs a target the game
-      // opens PARTY (handled below). Free items (heals/berries/held) keep the run alive.
+      // Take the highlighted reward (ACTION). If a previous attempt opened a target menu
+      // we can't handle (a TM/move-replacement), skip this reward instead: CANCEL opens a
+      // "skip?" confirm we then accept. Free items (heals/berries/held) keep the run alive.
+      if (skipNextReward) {
+        skipNextReward = false;
+        acceptNextConfirm = true; // the skip confirmation should be accepted, not declined
+        await press(Button.CANCEL, "reward:skip");
+        return;
+      }
       await press(Button.ACTION, "reward:take");
       return;
 
@@ -59,6 +66,12 @@ export async function step(s: GameSnapshot): Promise<void> {
       return;
 
     case "CONFIRM":
+      // Accept our own skip confirmation; decline everything else (e.g. learn-a-move).
+      if (acceptNextConfirm) {
+        acceptNextConfirm = false;
+        await press(Button.ACTION, "confirm:accept-skip");
+        return;
+      }
       await press(Button.CANCEL, "confirm:decline");
       return;
 
@@ -84,13 +97,26 @@ export async function step(s: GameSnapshot): Promise<void> {
 const PARTY_SEND_OUT = 0; // switch this mon in (faint-switch / switch)
 const PARTY_APPLY = 3; // apply the reward item to this mon
 
+// Set when a reward's target menu offers neither SEND_OUT nor APPLY (a TM / move-
+// replacement we won't handle in Phase 1). We then back out of the party and skip the
+// reward at MODIFIER_SELECT rather than oscillating forever in the option menu.
+let skipNextReward = false;
+// Set when CANCEL on MODIFIER_SELECT opens a "skip this reward?" confirm — that one CONFIRM
+// should be accepted (ACTION), unlike learn-move confirms which we decline.
+let acceptNextConfirm = false;
+/** Reset internal policy state (test seam). */
+export function resetPolicy(): void {
+  skipNextReward = false;
+  acceptNextConfirm = false;
+}
+
 /**
  * PARTY covers faint-switch and reward targeting. Two stages:
  *   1. No option menu yet → move the party cursor to the healthiest usable member and
- *      press ACTION to open its option menu.
- *   2. Option menu open (handler.optionsMode) → read handler.options, navigate the option
- *      cursor to SEND_OUT (switch) or APPLY (reward), and confirm. If neither is offered
- *      (e.g. a check-team screen), back out so we don't wedge on SUMMARY.
+ *      press ACTION to open its option menu (unless we've decided to abandon — then exit).
+ *   2. Option menu open (handler.optionsMode) → navigate to SEND_OUT (switch) or APPLY
+ *      (reward) and confirm. If neither is offered (a TM/move-replacement reward, or a
+ *      check-team screen), abandon: flag the reward to skip and back out of the party.
  */
 async function handleParty(s: GameSnapshot): Promise<void> {
   const h = getActiveHandler();
@@ -101,13 +127,21 @@ async function handleParty(s: GameSnapshot): Promise<void> {
     let target = opts.indexOf(PARTY_SEND_OUT);
     if (target < 0) target = opts.indexOf(PARTY_APPLY);
     if (target < 0) {
-      await press(Button.CANCEL, "party:no-action-option");
+      // No clean action (e.g. a TM's TEACH-only menu) → abandon this reward.
+      skipNextReward = true;
+      await press(Button.CANCEL, "party:abandon-options");
       return;
     }
     const oc = typeof h.optionsCursor === "number" ? h.optionsCursor : 0;
     if (oc < target) { await press(Button.DOWN, "party:opt-down"); return; }
     if (oc > target) { await press(Button.UP, "party:opt-up"); return; }
     await press(Button.ACTION, "party:select-option");
+    return;
+  }
+
+  // Decided to abandon this reward target → exit the party (back to MODIFIER_SELECT).
+  if (skipNextReward) {
+    await press(Button.CANCEL, "party:exit-to-skip");
     return;
   }
 
