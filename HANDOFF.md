@@ -69,13 +69,18 @@ Only after reads are confirmed do we wire inputs.
 ## Roadmap
 
 - **Phase 0 ✓ built** — observe-only harness + scene bridge. *(verify live, then close)*
-- **Phase 1** — input driver: `ui.processInput(Button.*)`, cursor pathing, human pacing,
-  dryRun. First inputs: auto-advance dialogue + auto-select type-effective move. *Verify: clears
-  waves 1–10 hands-off.*
-- **Phase 2** — full battle policy to wave 200: move-select (PP-aware, safe type-effective),
+- **Phase 1 ✓ done** — input driver: `ui.processInput(Button.*)`, cursor pathing, human pacing,
+  dryRun. Auto-advance dialogue + type-effective move-select, faint-switch. *(verified hands-off
+  via the Tier-2 integration suite.)*
+- **Phase 2 ✓ done** — full battle policy to wave 200: move-select (PP-aware, safe type-effective),
   switch (carry protection), catch (boss last-segment = unlock engine), rewards (priority table),
-  Eternatus handler (190–200; never out-stat Eternamax — neutralize/outlast/type-wall). *Verify:
-  one full clear, then read `dexData[].ribbons` and confirm every final-party line flipped.*
+  and the wave-200 Eternatus clear. The whole stack clears Classic hands-off — see the capstone
+  `tests/integration/classic-clear.test.ts` (beats both Eternatus phases incl. the Eternamax
+  transformation, registers `sessionsWon`, and confirms the CLASSIC ribbon lands on the final
+  party's dex line). No bespoke in-battle "endgame handler" was needed: the catch guard already
+  stops at the End Biome, and the post-victory sequence (ending dialogue → EndCard → voucher
+  rewards → PostGameOver) all flows through the message handler the bot already advances. The
+  "never out-stat Eternamax — neutralize/outlast/type-wall" strategy is TEAM selection → Phase 3.
   - **Catch ✓ done** — `src/catch.ts` + COMMAND/BALL cases in `src/policy.ts`. Throws at NEW
     (un-caught) species only; mirrors the game's own ball-legality exactly (wild + single foe +
     not End Biome; bosses only on the last shield segment `bossSegmentIndex === 0`). Conserves
@@ -90,7 +95,8 @@ Only after reads are confirmed do we wire inputs.
     row) to the best column. Status orbs score negative → the whole reward is skipped (CANCEL →
     accept the "skip?" confirm) rather than self-inflicted. Tests: `tests/rewards.test.ts` (unit)
     + `tests/integration/rewards.test.ts` (picks Leftovers over Potions; skips a lone Toxic Orb).
-  - **Still open in Phase 2:** the Eternatus/endgame finisher (waves 190–200).
+  - **Classic clear ✓ done** — `tests/integration/classic-clear.test.ts`: the full policy clears
+    the wave-200 Eternatus fight hands-off and awards the Classic ribbon. Phase 2 complete.
 - **Phase 3** — orchestration: team auto-select (lowest-cost Tier-S carry + Eternatus answer +
   cheapest un-ribboned passengers to cost 10), run sequencing, candy routing (reduce carry cost
   first), ribbon tracking, safety. *Verify: N unattended clears, +~4–5 ribbons/clear.*
