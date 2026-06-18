@@ -8,7 +8,9 @@
 // Usage:  node harness/soak.mjs        (dev server must be up on SOAK_URL)
 // Env:    SOAK_URL (default http://127.0.0.1:8000/)
 //         SOAK_HOURS (default 6)              — how long to run
-//         SOAK_GL (default swiftshader)       — swiftshader | egl | desktop  (use egl/desktop on a GPU box)
+//         SOAK_GL (default swiftshader)       — auto | swiftshader | egl | desktop
+//                                                 (auto = real GPU; use auto on a Mac, egl on a Linux GPU box)
+//         SOAK_HEADED (default 0)              — 1 = visible window (real GPU accel; best on a Mac desktop)
 //         SOAK_LOG (default soak-<ts>.jsonl)  — JSONL event log path
 //         SOAK_ENABLE_RETRIES (default 1)     — turn on the game's retry-on-defeat to exercise retries
 //         SOAK_HUMAN_PACING (default 0)       — 1 = shipped human pacing; 0 = brisk (more coverage)
@@ -19,15 +21,18 @@ const URL = process.env.SOAK_URL ?? "http://127.0.0.1:8000/";
 const HOURS = Number(process.env.SOAK_HOURS ?? 6);
 const DEADLINE = Date.now() + HOURS * 3600_000;
 const GL = process.env.SOAK_GL ?? "swiftshader";
+const HEADED = process.env.SOAK_HEADED === "1"; // visible window → real GPU (best on a Mac/desktop)
 const LOG = process.env.SOAK_LOG ?? `soak-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`;
 const ENABLE_RETRIES = (process.env.SOAK_ENABLE_RETRIES ?? "1") === "1";
 const HUMAN_PACING = (process.env.SOAK_HUMAN_PACING ?? "0") === "1";
 const BUNDLE = "dist/pokerogue-auto-ribbon.user.js";
 
 const glArgs =
-  GL === "swiftshader" ? ["--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader"]
+  GL === "auto" ? [] // force nothing → Chrome uses the platform's real GPU (use this on a Mac)
+  : GL === "swiftshader" ? ["--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader"]
   : GL === "egl" ? ["--use-gl=angle", "--use-angle=gl", "--ignore-gpu-blocklist", "--enable-gpu-rasterization"]
   : ["--use-gl=desktop", "--ignore-gpu-blocklist"];
+const launchOpts = { headless: !HEADED, args: [...glArgs, "--no-sandbox", "--disable-dev-shm-usage"] };
 
 const t0 = Date.now();
 const stamp = () => `${String(Math.floor((Date.now() - t0) / 60000)).padStart(3, " ")}m`;
@@ -89,9 +94,9 @@ async function sample(page) {
   });
 }
 
-let browser = await chromium.launch({ args: [...glArgs, "--no-sandbox", "--disable-dev-shm-usage"] });
+let browser = await chromium.launch(launchOpts);
 let page = await bootBot(browser);
-emit("start", { url: URL, hours: HOURS, gl: GL, log: LOG, enableRetries: ENABLE_RETRIES, humanPacing: HUMAN_PACING });
+emit("start", { url: URL, hours: HOURS, gl: GL, headed: HEADED, log: LOG, enableRetries: ENABLE_RETRIES, humanPacing: HUMAN_PACING });
 
 let inRun = false, run = null, lastSummary = Date.now();
 while (Date.now() < DEADLINE) {
@@ -104,7 +109,7 @@ while (Date.now() < DEADLINE) {
     emit("crash-recover", { msg: String(e.message).slice(0, 160) });
     try { await browser.close(); } catch {}
     try {
-      browser = await chromium.launch({ args: [...glArgs, "--no-sandbox", "--disable-dev-shm-usage"] });
+      browser = await chromium.launch(launchOpts);
       page = await bootBot(browser);
     } catch (e2) { emit("relaunch-failed", { msg: String(e2.message).slice(0, 160) }); await new Promise((r) => setTimeout(r, 30_000)); }
     continue;
