@@ -27,6 +27,15 @@ interface PhaserLike {
 
 let cached: RawScene | null = null;
 
+// Test-only injection: lets the deterministic GameManager suite point the bridge at
+// its headless `game.scene` instead of walking the (nonexistent) CanvasPool. Production
+// never calls this; getScene() falls through to the real acquisition path when unset.
+let testScene: RawScene | null = null;
+export function __setSceneForTest(scene: RawScene | null): void {
+  testScene = scene;
+  cached = null;
+}
+
 /** Heuristic: a BattleScene exposes these. Kept loose so minor renames don't false-negative. */
 function looksLikeBattleScene(s: any): boolean {
   return (
@@ -81,6 +90,7 @@ function findSceneArray(): RawScene[] {
  * Returns null if the game isn't ready yet (caller should retry on the next tick).
  */
 export function getScene(): RawScene | null {
+  if (testScene) return testScene; // deterministic test hook (see __setSceneForTest)
   if (cached && looksLikeBattleScene(cached)) return cached;
   cached = null;
 
