@@ -29,20 +29,27 @@ sudo -u bot -H bash <<'BOT'
 set -x
 cd "$HOME"
 echo "=== clone + provision ==="
+set +x   # SECRET: the clone URL carries the GitHub token — keep it out of the log
 git clone "@@REPO@@" repo
+set -x
 cd repo
 git checkout "@@BRANCH@@"
-git remote set-url origin https://github.com/chrischivetta/pokeroguetest.git  # drop the token from .git/config
+git config user.email "soak-bot@localhost"
+git config user.name "soak-bot"
+# Keep the token in the remote URL (this throwaway box needs it to PUSH its improvements). The
+# token only lives in .git/config on this disposable box; destroying the droplet wipes it.
 
 bash harness/soak-setup.sh   # Node deps, Playwright Chromium, PokéRogue clone+submodules+pnpm
 
 echo "=== install Claude Code ==="
 sudo npm install -g @anthropic-ai/claude-code
 
-# Subscription token in a 600 file (not on the command line / not in ps).
+# Subscription token in a 600 file (not on the command line / not in ps / not in the log).
 mkdir -p "$HOME/.config"
 umask 077
+set +x   # SECRET: don't echo the subscription token
 printf 'export CLAUDE_CODE_OAUTH_TOKEN=%q\nunset ANTHROPIC_API_KEY\n' "@@CLAUDE_TOKEN@@" > "$HOME/.config/claude.env"
+set -x
 
 echo "=== launch autonomous Claude (attach: tmux attach -t claude) ==="
 TASK='Read BOX.md and follow it exactly. Run soaks in the background (SOAK_HOURS=2 to start), diagnose from the telemetry (depth histogram, median death wave, per-run health/retry stats), make ONE focused strategy improvement at a time, prove it green (npm run typecheck && npm test && bash harness/integration.sh), re-soak to measure before/after, and commit each measured win to this branch with the delta in the message. Keep iterating autonomously. Stop and write a short RESULTS.md (and commit it) only when you hit a real blocker or have landed several measured improvements.'

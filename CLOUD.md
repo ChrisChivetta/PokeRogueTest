@@ -11,9 +11,10 @@ leave it** (they go straight into the droplet's user-data).
    doctl auth init
    doctl compute ssh-key list            # must show at least one key
    ```
-2. **GitHub PAT** — read-only access to this private repo:
+2. **GitHub PAT** — **Contents: Read AND Write** on this private repo (the box clones *and* pushes
+   its improvements back):
    ```bash
-   export GITHUB_TOKEN=github_pat_...     # fine-grained, Contents:Read on chrischivetta/pokeroguetest
+   export GITHUB_TOKEN=github_pat_...     # fine-grained, Contents:Read+Write on chrischivetta/pokeroguetest
    ```
 3. **Claude subscription token** — mint it from a machine where you're logged into Claude Max:
    ```bash

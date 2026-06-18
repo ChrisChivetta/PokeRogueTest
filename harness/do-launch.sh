@@ -5,7 +5,8 @@
 # Prereqs:
 #   • doctl installed + authed:        doctl auth init
 #   • an SSH key registered with DO:    doctl compute ssh-key list   (so you can attach later)
-#   • a GitHub PAT (read-only) for the private bot repo  →  export GITHUB_TOKEN=github_pat_...
+#   • a GitHub PAT with Contents: Read AND Write on the repo (the box clones AND pushes its
+#       improvements back)  →  export GITHUB_TOKEN=github_pat_...
 #   • a Claude subscription token       →  run `claude setup-token` on your logged-in machine,
 #                                            then  export CLAUDE_CODE_OAUTH_TOKEN=...
 # Optional: DO_SIZE (default s-8vcpu-16gb basic ≈ $0.18/hr, works on new accounts; bump to a
