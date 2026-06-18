@@ -12,7 +12,8 @@
     "smoke": "node build.mjs && node harness/smoke.mjs",
     "smoke:run": "node build.mjs && node harness/smoke-run.mjs",
     "smoke:full": "node build.mjs && node harness/smoke-full.mjs",
-    "smoke:candy": "node build.mjs && node harness/smoke-candy.mjs"
+    "smoke:candy": "node build.mjs && node harness/smoke-candy.mjs",
+    "soak": "node build.mjs && node harness/soak.mjs"
   },
   "license": "AGPL-3.0-only",
   "devDependencies": {

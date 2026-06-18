@@ -27,6 +27,25 @@ game update: start the dev server (`cd <pokerogue checkout> && VITE_BYPASS_LOGIN
 development --host 127.0.0.1 --port 8000`), then `npm run smoke`. Still live-unverified: input
 DRIVING and the title→starter-select EXECUTION glue (build them on this smoke harness next).
 
+## Soak testing on a cloud box (the way to test full runs)
+
+This dev container has no GPU → PokéRogue runs at 3-7 FPS, fine for validating UI-driving logic
+but far too slow for full 200-wave clears / multi-run soak. To test further, run the bot against
+the LOCAL build on a box with real FPS (a GPU box, or a fat-CPU box that hits ~20-30 FPS on
+SwiftShader). No real account involved → no ToS/ban risk.
+
+- `harness/soak-setup.sh` — provision a fresh Ubuntu box (Node 20, bot deps + build, Playwright
+  Chromium, clone PokéRogue + submodules + `pnpm install`, offline-boot env).
+- `harness/soak-run.sh` — start the dev server + run the soak. `SOAK_GL=egl` on a GPU box.
+- `harness/soak.mjs` — boots the build headless, injects the bot, runs it for `SOAK_HOURS`
+  (default 6) with retries on, and writes structured JSONL telemetry (`run-start`/`run-end`,
+  `ribbon-gained`, `safety-halt-resume`, `crash-recover`, periodic `summary`, FPS) — auto-recovers
+  from page crashes and safety halts so a long session survives hiccups. Final rollup: runs
+  started/ended, max wave reached, ribbons gained, halts, crashes, errors.
+
+Quickstart on the box: `bash harness/soak-setup.sh && SOAK_HOURS=8 SOAK_GL=egl bash harness/soak-run.sh`.
+Review `soak-*.jsonl` (or the console `summary`/`FINAL` lines) for what the bot actually achieved.
+
 ## (historical) Phase 0 built, not yet live-verified
 
 The plan is a 5-phase, MVP-first build of an unattended Classic-mode bot that ribbons every

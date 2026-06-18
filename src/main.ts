@@ -172,6 +172,11 @@ const api = {
     log.info("snapshot:", s);
     return s;
   },
+  /** Compact ribbon progress for telemetry/soak: {owned, ribboned, remaining, done}. */
+  progress(): { owned: number; ribboned: number; remaining: number; done: boolean } {
+    const plan = planRun(readRoster());
+    return { owned: plan.ownedCount, ribboned: plan.ribbonedCount, remaining: plan.remaining, done: plan.done };
+  },
   ready(): boolean {
     return isSceneReady();
   },
