@@ -54,6 +54,26 @@ describe("auto-ribbon — flows", () => {
     expect(game.scene.getEnemyParty()[0].isFainted()).toBe(true);
   }, 25000);
 
+  it("beats a multi-Pokémon trainer (handles the trainer sending its next mon)", async () => {
+    game.override.battleType(BattleType.TRAINER).randomTrainer({ trainerType: TrainerType.TWINS })
+      .battleStyle("double").moveset([MoveId.VINE_WHIP]).startingLevel(100);
+    await game.classicMode.startBattle(SpeciesId.BULBASAUR, SpeciesId.SQUIRTLE);
+    attachBot(game.scene);
+    expect(readState().battle?.isTrainer).toBe(true);
+    const enemyCount = game.scene.getEnemyParty().length;
+    expect(enemyCount).toBeGreaterThanOrEqual(2);
+
+    // Win the whole trainer battle (every enemy mon KO'd), not just the first. Pump turns
+    // until the trainer is out of Pokémon.
+    await withBotDriving(async () => {
+      for (let i = 0; i < 25 && !game.scene.getEnemyParty().every((e) => e.isFainted()); i++) {
+        await game.phaseInterceptor.to("TurnEndPhase").catch(() => {});
+      }
+    });
+
+    expect(game.scene.getEnemyParty().every((e) => e.isFainted())).toBe(true);
+  }, 40000);
+
   it("declines a level-up move-learn without hanging", async () => {
     // 4 full move slots + big XP → on level-up the game asks to forget a move to learn a
     // new one. The bot should decline and not wedge on the confirm dialog(s).
