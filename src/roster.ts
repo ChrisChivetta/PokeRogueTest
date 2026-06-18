@@ -8,6 +8,7 @@
 import { getScene } from "./bridge";
 import { CARRY_RANK, type StarterInfo } from "./team";
 import type { CandyStarter } from "./candy";
+import type { CatchContext } from "./catch";
 
 /** RibbonData.CLASSIC (src/system/ribbons/ribbon-data.ts) — the bit a Classic clear awards. */
 export const CLASSIC_RIBBON = 0x0008000000n;
@@ -92,4 +93,56 @@ export function readCandyStarters(): CandyStarter[] {
     });
   }
   return out;
+}
+
+/**
+ * Read the on-field wild + our party by STARTER (root) species — cost, Classic-ribbon status, and
+ * caught/carry flags — for the catch-for-ribbons decision (catch.ts/worthCatching). Cost + ribbon
+ * are tracked at the base-species level, so each mon resolves via `species.getRootSpeciesId()`.
+ * Defensive: returns null if the scene/foe isn't readable. Version-fragile (touches live objects).
+ */
+export function readCatchContext(): CatchContext | null {
+  let scene: any;
+  try {
+    scene = getScene();
+  } catch {
+    return null; // no live scene (e.g. unit-test env) → caller falls back to fighting
+  }
+  const gd: any = scene?.gameData;
+  if (!gd?.dexData || typeof gd.getSpeciesStarterValue !== "function") return null;
+
+  const root = (p: any): number | null => {
+    try {
+      const id = p?.species?.getRootSpeciesId?.();
+      return typeof id === "number" ? id : null;
+    } catch {
+      return null;
+    }
+  };
+  const costOf = (id: number): number | null => {
+    try {
+      const c = gd.getSpeciesStarterValue(id);
+      return Number.isFinite(c) ? c : null;
+    } catch {
+      return null;
+    }
+  };
+  const ribbonedOf = (id: number): boolean => (readRibbons(gd.dexData[id]) & CLASSIC_RIBBON) !== 0n;
+
+  const foe = (scene.getEnemyField?.() ?? []).find((p: any) => p?.isOnField?.()) ?? scene.getEnemyField?.()?.[0];
+  const foeRoot = foe ? root(foe) : null;
+  if (foeRoot == null) return null;
+  const foeCost = costOf(foeRoot);
+  if (foeCost == null) return null;
+
+  const party: CatchContext["party"] = [];
+  for (const p of scene.getPlayerParty?.() ?? []) {
+    const id = root(p);
+    if (id == null) continue;
+    const cost = costOf(id);
+    if (cost == null) continue;
+    party.push({ ribboned: ribbonedOf(id), cost, isCarry: id in CARRY_RANK });
+  }
+
+  return { caught: !!gd.dexData[foeRoot]?.caughtAttr, ribboned: ribbonedOf(foeRoot), cost: foeCost, party };
 }

@@ -13,6 +13,7 @@
 
 import type { GameSnapshot, PokemonSnapshot } from "./state";
 import { config } from "./config";
+import { readCatchContext } from "./roster";
 
 /** PokeballType enum (src/enums/pokeball.ts @ main): index into scene.pokeballCounts. */
 export const PokeballType = { POKE: 0, GREAT: 1, ULTRA: 2, ROGUE: 3, MASTER: 4 } as const;
@@ -49,9 +50,21 @@ export function shouldCatch(s: GameSnapshot): boolean {
   if (foes.length !== 1) return false; // ball is blocked when more than one foe is on the field
   const foe = foes[0];
 
-  if (foe.speciesCaught !== false) return false; // only NEW species (false === confirmed un-caught)
   if (foe.isBoss && foe.bossSegmentIndex !== 0) return false; // bosses: only the last segment (non-Master)
   if (!hasAnyBall(s)) return false;
+
+  // Decide WHAT's worth a ball. A NEW species is always worth it (unlocks the line even if the
+  // party's full and it gets boxed). A caught-but-un-ribboned mon is only worth it if we can KEEP
+  // it (room in the party) AND it out-costs a swappable member — see worthCatching. (Swap-when-full
+  // is a later step, so we require open room for now.)
+  if (foe.speciesCaught === false) {
+    // new species → always worth a ball
+  } else {
+    if (!config.catchUnribboned) return false;
+    if (s.playerParty.length >= 6) return false; // no room to keep it
+    const ctx = readCatchContext();
+    if (!ctx || !worthCatching(ctx)) return false;
+  }
 
   // Reset the counter whenever the target changes (new wave / new foe).
   const key = `${b.waveIndex}:${foe.speciesId}:${foe.name}`;
@@ -82,4 +95,37 @@ export function pickBall(s: GameSnapshot): number | null {
 /** Record a throw at the current target (call when the ball is actually released). */
 export function noteCatchAttempt(): void {
   attempts++;
+}
+
+// ── Catch-for-ribbons value ──────────────────────────────────────────────────
+// Beyond unlocking new species, we catch caught-but-UN-ribboned mons to carry them to the
+// wave-200 clear and ribbon them — but only the EXPENSIVE ones, because cheap un-ribboned
+// starters already get ribboned via the budget team at starter-select. So a caught mon is worth
+// a ball only if it out-costs a party member we'd happily swap out (un-ribboned, and NOT the
+// carry/sweeper — losing the carry loses the run).
+
+/** One party member, reduced to what the catch-value decision needs (root-species cost/ribbon). */
+export interface PartyMon {
+  ribboned: boolean;
+  cost: number;
+  isCarry: boolean;
+}
+
+/** The on-field wild + our party, by starter (root) species, for the catch-value decision. */
+export interface CatchContext {
+  caught: boolean; // is the wild's starter line already owned?
+  ribboned: boolean; // does it already hold the Classic ribbon?
+  cost: number; // its starter cost
+  party: PartyMon[];
+}
+
+/**
+ * Is this wild worth a ball for the ribbon objective? PURE. Uncaught → always (unlock + a future
+ * ribbon). Already-ribboned → never. Caught-but-un-ribboned → only if it out-costs a replaceable
+ * (un-ribboned, non-carry) party member, i.e. it's too expensive to ribbon via the budget team.
+ */
+export function worthCatching(ctx: CatchContext): boolean {
+  if (!ctx.caught) return true;
+  if (ctx.ribboned) return false;
+  return ctx.party.some((p) => !p.ribboned && !p.isCarry && p.cost < ctx.cost);
 }

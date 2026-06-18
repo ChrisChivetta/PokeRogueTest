@@ -26,6 +26,12 @@ export interface Config {
 
   /** Throw balls at new (un-caught) species to unlock them as future starters. */
   catchNewSpecies: boolean;
+  /**
+   * Also catch caught-but-un-ribboned mons to carry them to the clear and ribbon them — but only
+   * the expensive ones (cheap un-ribboned lines get ribboned via the budget team), and only while
+   * the party has room to keep them. See catch.ts/worthCatching.
+   */
+  catchUnribboned: boolean;
   /** Max ball throws at one catch target before giving up and KO-ing it. */
   catchAttemptsPerTarget: number;
 
@@ -56,6 +62,7 @@ export const config: Config = {
   maxTurnsPerWave: 80,
   maxWallClockPerRunMs: 60 * 60 * 1000, // 1h per run ceiling
   catchNewSpecies: true,
+  catchUnribboned: true,
   catchAttemptsPerTarget: 3,
   applyCandyReductions: false, // experimental — see note above
   maxRetriesPerWave: 3,

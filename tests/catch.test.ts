@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { shouldCatch, pickBall, noteCatchAttempt, resetCatch, PokeballType } from "../src/catch";
+import { shouldCatch, pickBall, noteCatchAttempt, resetCatch, PokeballType, worthCatching } from "../src/catch";
+import type { CatchContext } from "../src/catch";
 import { config } from "../src/config";
 import type { GameSnapshot } from "../src/state";
 
@@ -93,5 +94,40 @@ describe("catch — ball selection", () => {
 
   it("returns null with an empty bag", () => {
     expect(pickBall(s({ pokeballCounts: [0, 0, 0, 0, 0] }))).toBeNull();
+  });
+});
+
+describe("worthCatching — catch-for-ribbons value", () => {
+  const ctx = (o: Partial<CatchContext> = {}): CatchContext =>
+    ({ caught: false, ribboned: false, cost: 5, party: [], ...o });
+  const member = (o: Partial<CatchContext["party"][number]> = {}) =>
+    ({ ribboned: false, cost: 3, isCarry: false, ...o });
+
+  it("always worth a ball when the line is un-caught (unlock)", () => {
+    expect(worthCatching(ctx({ caught: false }))).toBe(true);
+  });
+
+  it("never bothers with an already-ribboned line", () => {
+    expect(worthCatching(ctx({ caught: true, ribboned: true }))).toBe(false);
+  });
+
+  it("catches a high-cost un-ribboned mon over a cheaper un-ribboned passenger", () => {
+    expect(worthCatching(ctx({ caught: true, cost: 6, party: [member({ cost: 3 })] }))).toBe(true);
+  });
+
+  it("won't bother if it doesn't out-cost any swappable member", () => {
+    expect(worthCatching(ctx({ caught: true, cost: 3, party: [member({ cost: 3 }), member({ cost: 5 })] }))).toBe(false);
+  });
+
+  it("never swaps out the carry/sweeper, even if cheaper", () => {
+    expect(worthCatching(ctx({ caught: true, cost: 6, party: [member({ cost: 3, isCarry: true })] }))).toBe(false);
+  });
+
+  it("never swaps out an already-ribboned member (it's done)", () => {
+    expect(worthCatching(ctx({ caught: true, cost: 6, party: [member({ cost: 3, ribboned: true })] }))).toBe(false);
+  });
+
+  it("caught but no swappable party (e.g. empty) → not worth a ball", () => {
+    expect(worthCatching(ctx({ caught: true, cost: 6, party: [] }))).toBe(false);
   });
 });
