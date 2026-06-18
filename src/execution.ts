@@ -71,6 +71,7 @@ let planIds: number[] | null = null;
 let candyDone = false;
 let candyAttempts = 0;
 let candyLogged = false;
+let lastMenuLog = "";
 // Bounds the candy phase so a mis-navigation can't loop forever before we move on to the team.
 const MAX_CANDY_ATTEMPTS = 40;
 
@@ -114,6 +115,10 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
     const find = (needle: string) => labels.findIndex((l) => l.includes(needle));
 
     if (!candyDone) {
+      if (labels.join("|") !== lastMenuLog) {
+        lastMenuLog = labels.join("|");
+        log.info(`[starter] candy menu: [${labels.join(" | ")}] cursor=${s.cursor}`);
+      }
       // Candy sub-flow: in the per-mon menu pick "Use Candies"; in the candy menu pick "Reduce
       // Cost". If the candy menu has no reduction left (maxed/unaffordable), back out to re-plan.
       const reduce = find("reduce cost");

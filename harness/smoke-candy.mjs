@@ -16,7 +16,7 @@ const browser = await chromium.launch({
 const page = await browser.newPage();
 page.on("console", (m) => {
   const t = m.text();
-  if (t.includes("[starter] candy plan")) log("BOT:", t.replace(/%c|color:[^ ]+|font-weight:bold/g, "").trim());
+  if (t.includes("[starter] candy")) log("BOT:", t.replace(/%c|color:[^ ]+|font-weight:bold/g, "").trim());
 });
 let failed = false;
 try {
