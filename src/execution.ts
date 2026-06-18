@@ -65,9 +65,17 @@ export async function driveStartRun(s: GameSnapshot): Promise<void> {
 
 let planIds: number[] | null = null;
 
+let lastSubmitAt = 0;
+// After SUBMIT, tryStart shows a "confirm start team?" message via the message handler WITHOUT
+// changing getMode() (the starter handler isn't a MessageUiHandler) — so the screen still reads
+// STARTER_SELECT for ~1s while the text types and its callback opens the CONFIRM. We must NOT
+// re-SUBMIT during that window or we restart the message and the CONFIRM never appears.
+const SUBMIT_COOLDOWN_MS = 3000;
+
 /** Drop the cached team plan (call when leaving starter select / between runs). */
 export function resetStarterSelect(): void {
   planIds = null;
+  lastSubmitAt = 0;
 }
 
 /** The planned team's species ids, computed once per starter-select visit from the live roster. */
@@ -112,8 +120,12 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
   if (h.filterMode === true) { await press(Button.CANCEL, "starter:exit-filter"); return; }
   const onStartBtn = h.startCursorObj?.visible === true || h.randomCursorObj?.visible === true;
 
-  // Team complete (or nothing addable) → start the run via SUBMIT.
+  // Team complete (or nothing addable) → start the run via SUBMIT, then wait out the confirm-start
+  // message (which leaves getMode() on STARTER_SELECT) so we don't restart it. The CONFIRM it opens
+  // is handled above; if it never appears we retry after the cooldown.
   if ((remaining.length === 0 && teamIds.length > 0) || teamIds.length >= 6) {
+    if (Date.now() - lastSubmitAt < SUBMIT_COOLDOWN_MS) return;
+    lastSubmitAt = Date.now();
     await press(Button.SUBMIT, "starter:start");
     return;
   }
@@ -122,17 +134,24 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
   // Degenerate safety: nothing planned is addable and team is empty → add whatever's at the cursor.
   if (remaining.length === 0) { await press(Button.ACTION, "starter:add-fallback"); return; }
 
-  // Navigate the grid toward the next target species, then ACTION to open its add menu.
+  // Navigate the grid toward the next target species, then ACTION to open its add menu. The grid
+  // can be large (every owned starter across gens), so we take several steps per call — re-reading
+  // the live cursor between each — rather than one per tick, or a 6-mon team would take minutes.
   const target = remaining[0];
-  const cur = typeof h.cursor === "number" ? h.cursor : 0;
   const idx = idxOf(target);
-  if (cur === idx) { await press(Button.ACTION, "starter:open-add"); return; }
   const COLS = 9;
-  const [cr, cc] = [Math.floor(cur / COLS), cur % COLS];
-  const [tr, tc] = [Math.floor(idx / COLS), idx % COLS];
-  if (cr < tr) { await press(Button.DOWN, "starter:nav-down"); return; }
-  if (cr > tr) { await press(Button.UP, "starter:nav-up"); return; }
-  if (cc < tc) { await press(Button.RIGHT, "starter:nav-right"); return; }
-  if (cc > tc) { await press(Button.LEFT, "starter:nav-left"); return; }
-  await press(Button.ACTION, "starter:open-add");
+  for (let step = 0; step < GRID_STEPS_PER_TICK; step++) {
+    const cur = typeof h.cursor === "number" ? h.cursor : 0;
+    if (cur === idx) { await press(Button.ACTION, "starter:open-add"); return; }
+    const [cr, cc] = [Math.floor(cur / COLS), cur % COLS];
+    const [tr, tc] = [Math.floor(idx / COLS), idx % COLS];
+    if (cr < tr) await press(Button.DOWN, "starter:nav-down");
+    else if (cr > tr) await press(Button.UP, "starter:nav-up");
+    else if (cc < tc) await press(Button.RIGHT, "starter:nav-right");
+    else if (cc > tc) await press(Button.LEFT, "starter:nav-left");
+    else break;
+  }
 }
+
+/** Grid steps taken per driveStarterSelect call (re-reading the cursor each step). */
+const GRID_STEPS_PER_TICK = 8;
