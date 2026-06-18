@@ -42,6 +42,53 @@ describe("auto-ribbon — rewards", () => {
     expect(game.scene.currentBattle.waveIndex).toBe(2);
   }, 30000);
 
+  it("picks the higher-priority reward (Leftovers over Potions)", async () => {
+    await game.classicMode.startBattle(SpeciesId.BULBASAUR);
+    attachBot(game.scene);
+    const lead = game.scene.getPlayerParty()[0];
+
+    // Offer a survival held item alongside two consumable potions; the bot must choose
+    // Leftovers (priority) and apply it, not just grab whatever's highlighted.
+    game.scene.phaseManager.overridePhase(
+      new SelectModifierPhase(0, undefined, {
+        guaranteedModifierTypeFuncs: [modifierTypes.POTION, modifierTypes.LEFTOVERS, modifierTypes.SUPER_POTION],
+        fillRemaining: false,
+      }),
+    );
+
+    await withBotDriving(async () => {
+      await game.phaseInterceptor.to("SelectModifierPhase").catch(() => {});
+      await vi.waitUntil(() => lead.getHeldItems().some((m: any) => m.type?.id === "LEFTOVERS"),
+        { timeout: 12000, interval: 50 });
+    });
+
+    expect(lead.getHeldItems().some((m: any) => m.type?.id === "LEFTOVERS")).toBe(true);
+  }, 25000);
+
+  it("skips a reward that would only harm the team (a lone status orb)", async () => {
+    await game.classicMode.startBattle(SpeciesId.BULBASAUR);
+    attachBot(game.scene);
+    const lead = game.scene.getPlayerParty()[0];
+    const heldBefore = lead.getHeldItems().length;
+
+    // The only offer is a Toxic Orb (negative score) — the bot should skip the whole reward
+    // (CANCEL → accept the "skip?" confirm) rather than self-inflict it on the carry.
+    game.scene.phaseManager.overridePhase(
+      new SelectModifierPhase(0, undefined, {
+        guaranteedModifierTypeFuncs: [modifierTypes.TOXIC_ORB],
+        fillRemaining: false,
+      }),
+    );
+
+    await withBotDriving(async () => {
+      await game.phaseInterceptor.to("SelectModifierPhase").catch(() => {});
+      await vi.waitUntil(() => !game.isCurrentPhase("SelectModifierPhase"),
+        { timeout: 12000, interval: 50 });
+    });
+
+    expect(lead.getHeldItems().length).toBe(heldBefore); // nothing applied — the orb was skipped
+  }, 25000);
+
   it("resolves a reward that needs a party target (PARTY → APPLY)", async () => {
     await game.classicMode.startBattle(SpeciesId.BULBASAUR);
     attachBot(game.scene);

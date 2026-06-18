@@ -21,6 +21,7 @@ import { Button, getActiveHandler, getMysteryEncounter, inMysteryEncounter } fro
 import { press, moveCursor2x2 } from "./input";
 import { bestMoveIndex } from "./typechart";
 import { shouldCatch, pickBall, noteCatchAttempt, resetCatch } from "./catch";
+import { bestRewardIndex, type RewardOption } from "./rewards";
 
 const onField = (party: GameSnapshot["playerParty"]) => party.find((p) => p.onField) ?? party[0];
 
@@ -70,16 +71,7 @@ export async function step(s: GameSnapshot): Promise<void> {
       return;
 
     case "MODIFIER_SELECT":
-      // Take the highlighted reward (ACTION). If a previous attempt opened a target menu
-      // we can't handle (a TM/move-replacement), skip this reward instead: CANCEL opens a
-      // "skip?" confirm we then accept. Free items (heals/berries/held) keep the run alive.
-      if (skipNextReward) {
-        skipNextReward = false;
-        acceptNextConfirm = true; // the skip confirmation should be accepted, not declined
-        await press(Button.CANCEL, "reward:skip");
-        return;
-      }
-      await press(Button.ACTION, "reward:take");
+      await handleReward(s);
       return;
 
     case "PARTY":
@@ -145,6 +137,60 @@ export function resetPolicy(): void {
   skipNextReward = false;
   acceptNextConfirm = false;
   resetCatch();
+}
+
+/** Distill the live ModifierSelect handler's offered reward row into scoreable options. */
+function readRewardOptions(h: any): RewardOption[] {
+  const opts: any[] = Array.isArray(h?.options) ? h.options : [];
+  return opts.map((o) => {
+    const type = o?.modifierTypeOption?.type;
+    const localeKey: string = typeof type?.localeKey === "string" ? type.localeKey : "";
+    return {
+      id: typeof type?.id === "string" && type.id.length > 0 ? type.id : null,
+      tier: typeof type?.tier === "number" ? type.tier : null,
+      // Generated TMs carry no registry id; spot them by their move handle / locale key.
+      isTm: typeof type?.moveId === "number" || localeKey.startsWith("tm_"),
+    };
+  });
+}
+
+/**
+ * MODIFIER_SELECT — the post-wave reward screen. Pick the option most valuable to finishing
+ * the run (see rewards.ts), navigating the handler's 2-D grid: rowCursor 1 is the free-reward
+ * row, cursor is the column. We climb to that row, slide to the best column, then take it.
+ *   • skipNextReward — a prior APPLY target menu was unusable (a TM): CANCEL → accept the skip.
+ *   • everything offered is harmful (negative score) — skip the reward the same way.
+ */
+async function handleReward(s: GameSnapshot): Promise<void> {
+  if (skipNextReward) {
+    skipNextReward = false;
+    acceptNextConfirm = true; // the skip confirmation should be accepted, not declined
+    await press(Button.CANCEL, "reward:skip");
+    return;
+  }
+
+  const h = getActiveHandler();
+  const best = bestRewardIndex(readRewardOptions(h));
+
+  // Row unreadable (still animating / shop-only) → just take whatever's highlighted.
+  if (!best) {
+    await press(Button.ACTION, "reward:take");
+    return;
+  }
+  // Every option would hurt a generic carry → skip the whole reward (CANCEL → accept confirm).
+  if (best.score < 0) {
+    acceptNextConfirm = true;
+    await press(Button.CANCEL, "reward:skip-bad");
+    return;
+  }
+
+  // Navigate to the rewards row (1), then to the chosen column, then take it.
+  const row = typeof h?.rowCursor === "number" ? h.rowCursor : 1;
+  if (row !== 1) { await press(row < 1 ? Button.UP : Button.DOWN, "reward:to-rewards-row"); return; }
+  const cur = s.cursor ?? 0;
+  if (cur < best.index) { await press(Button.RIGHT, "reward:nav-right"); return; }
+  if (cur > best.index) { await press(Button.LEFT, "reward:nav-left"); return; }
+  await press(Button.ACTION, "reward:take-best");
 }
 
 /**

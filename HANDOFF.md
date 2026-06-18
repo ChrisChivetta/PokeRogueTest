@@ -83,7 +83,14 @@ Only after reads are confirmed do we wire inputs.
     throws per target (`config.catchAttemptsPerTarget`, then KOs). State reads `isBoss`/
     `bossSegmentIndex`/`speciesCaught` (dex `caughtAttr`). Tests: `tests/catch.test.ts` (unit) +
     `tests/integration/catch.test.ts` (catches a wild + a last-segment boss in the headless game).
-  - **Still open in Phase 2:** reward priority table, the Eternatus/endgame finisher.
+  - **Reward priority ✓ done** — `src/rewards.ts` + `handleReward` in `src/policy.ts`. Picks the
+    free reward most valuable to finishing a run by a curated priority over `ModifierType.id`
+    (survival held items > permanent progression > one-shot heals > junk), with a tier-based
+    fallback for unlisted items. Navigates the modifier screen's 2-D grid (rowCursor 1 = rewards
+    row) to the best column. Status orbs score negative → the whole reward is skipped (CANCEL →
+    accept the "skip?" confirm) rather than self-inflicted. Tests: `tests/rewards.test.ts` (unit)
+    + `tests/integration/rewards.test.ts` (picks Leftovers over Potions; skips a lone Toxic Orb).
+  - **Still open in Phase 2:** the Eternatus/endgame finisher (waves 190–200).
 - **Phase 3** — orchestration: team auto-select (lowest-cost Tier-S carry + Eternatus answer +
   cheapest un-ribboned passengers to cost 10), run sequencing, candy routing (reduce carry cost
   first), ribbon tracking, safety. *Verify: N unattended clears, +~4–5 ribbons/clear.*

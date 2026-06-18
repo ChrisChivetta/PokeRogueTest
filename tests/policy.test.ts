@@ -88,9 +88,38 @@ describe("policy routing", () => {
     expect(rec.presses).toEqual(["nav:0->1", "5:fight:move1"]);
   });
 
-  it("MODIFIER_SELECT takes the reward", async () => {
+  it("MODIFIER_SELECT takes the reward when the row is unreadable", async () => {
     await step(snap({ uiMode: "MODIFIER_SELECT" }));
-    expect(rec.presses).toEqual(["5:reward:take"]);
+    expect(rec.presses).toEqual(["5:reward:take"]); // no handler options → take highlighted
+  });
+
+  const rewardHandler = (ids: string[], rowCursor = 1) => ({
+    rowCursor,
+    options: ids.map((id) => ({ modifierTypeOption: { type: { id, tier: 1 } } })),
+  });
+
+  it("MODIFIER_SELECT navigates to the highest-priority reward and takes it", async () => {
+    hRef.current = rewardHandler(["POTION", "REVIVER_SEED", "TM_COMMON"]); // best = index 1
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0 }));
+    expect(rec.presses).toEqual(["3:reward:nav-right"]); // RIGHT toward column 1
+    rec.presses = [];
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 1 }));
+    expect(rec.presses).toEqual(["5:reward:take-best"]);
+  });
+
+  it("MODIFIER_SELECT climbs from the button row to the rewards row first", async () => {
+    hRef.current = rewardHandler(["LEFTOVERS"], 0); // cursor parked on the bottom button row
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0 }));
+    expect(rec.presses).toEqual(["0:reward:to-rewards-row"]); // UP to reach the rewards row
+  });
+
+  it("MODIFIER_SELECT skips a row of only-harmful items", async () => {
+    hRef.current = rewardHandler(["TOXIC_ORB", "FLAME_ORB"]);
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0 }));
+    expect(rec.presses).toEqual(["6:reward:skip-bad"]);
+    rec.presses = [];
+    await step(snap({ uiMode: "CONFIRM" })); // the skip confirmation is accepted, not declined
+    expect(rec.presses).toEqual(["5:confirm:accept-skip"]);
   });
 
   it("advances dialogue only when awaiting input", async () => {
