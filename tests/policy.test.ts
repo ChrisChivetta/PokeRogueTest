@@ -21,7 +21,7 @@ vi.mock("../src/bridge", async (orig) => {
   };
 });
 
-import { resetPolicy, step } from "../src/policy";
+import { resetPolicy, step, pickPartyTarget } from "../src/policy";
 import { resetRetry, noteRetry } from "../src/retry";
 import type { GameSnapshot } from "../src/state";
 
@@ -274,5 +274,38 @@ describe("mystery encounters", () => {
     meRef.current = null; // outside an encounter, don't touch option menus
     await step(snap({ uiMode: "OPTION_SELECT" }));
     expect(rec.presses).toEqual([]);
+  });
+});
+
+describe("pickPartyTarget", () => {
+  const party = [
+    p({ fainted: false, hpRatio: 1.0 }), // 0 — healthiest live
+    p({ fainted: true, hpRatio: 0 }), //    1 — fainted
+    p({ fainted: false, hpRatio: 0.3 }), // 2 — most-hurt live
+  ];
+  it("revive → first fainted slot", () => expect(pickPartyTarget(party, "revive")).toBe(1));
+  it("heal → most-hurt live slot", () => expect(pickPartyTarget(party, "heal")).toBe(2));
+  it("switch → healthiest live slot", () => expect(pickPartyTarget(party, "switch")).toBe(0));
+  it("revive with nobody fainted → -1 (no valid target)", () =>
+    expect(pickPartyTarget([p({ fainted: false, hpRatio: 0.5 })], "revive")).toBe(-1));
+});
+
+describe("reward apply targeting (the revive-loop fix)", () => {
+  it("a Revive reward aims PARTY at the fainted mon, not the healthiest", async () => {
+    // Take a Revive on the reward screen → records the apply intent.
+    hRef.current = { options: [{ modifierTypeOption: { type: { id: "REVIVE", tier: 1 } } }], rowCursor: 1 };
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0 }));
+    expect(rec.presses.at(-1)).toBe("5:reward:take-best");
+    // Now in PARTY: slot 0 healthy, slot 1 fainted → head DOWN toward the fainted slot.
+    rec.presses = [];
+    hRef.current = { optionsMode: false };
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: [p({ hpRatio: 1 }), p({ fainted: true, hpRatio: 0 })] }));
+    expect(rec.presses).toEqual(["1:party:nav"]);
+  });
+
+  it("without a heal/revive pending, PARTY still switches to the healthiest", async () => {
+    hRef.current = { optionsMode: false };
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: [p({ hpRatio: 0.2 }), p({ hpRatio: 0.9 })] }));
+    expect(rec.presses).toEqual(["1:party:nav"]); // slot 1 is healthiest
   });
 });

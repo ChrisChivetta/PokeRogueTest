@@ -32,6 +32,7 @@ export async function step(s: GameSnapshot): Promise<void> {
 
   switch (s.uiMode) {
     case "COMMAND": {
+      pendingApply = null; // a new turn began; any reward-apply is finished
       const cur = s.cursor ?? 0;
       // Catch a new species when we legally can (the unlock engine) — otherwise fight.
       if (shouldCatch(s)) {
@@ -135,10 +136,42 @@ let skipNextReward = false;
 // Set when CANCEL on MODIFIER_SELECT opens a "skip this reward?" confirm — that one CONFIRM
 // should be accepted (ACTION), unlike learn-move confirms which we decline.
 let acceptNextConfirm = false;
+// What we're currently applying via the PARTY screen, set when we take a heal/revive reward, so
+// handleParty picks a VALID target: a Revive can ONLY target a fainted mon (selecting a live one
+// loops); a heal should go to the most-hurt mon, not the healthiest (which wastes it).
+let pendingApply: ApplyKind = null;
+type ApplyKind = "revive" | "heal" | null;
+
+// ModifierType.id registry keys (modifier/modifier-type.ts). SACRED_ASH revives the WHOLE party
+// (no target), so it's not here. FULL_HEAL only cures status (any mon) — left to the default.
+const REVIVE_IDS = new Set(["REVIVE", "MAX_REVIVE"]);
+const HEAL_IDS = new Set(["POTION", "SUPER_POTION", "HYPER_POTION", "MAX_POTION", "FULL_RESTORE"]);
+const applyKind = (id: string | null | undefined): ApplyKind =>
+  id && REVIVE_IDS.has(id) ? "revive" : id && HEAL_IDS.has(id) ? "heal" : null;
+
+/**
+ * Which party slot to act on, given the intent. PURE so it's unit-testable. A revive targets the
+ * first FAINTED mon; a heal the MOST-HURT live mon; a switch the HEALTHIEST live mon. Returns -1
+ * if there's no valid target (e.g. a revive with nobody fainted).
+ */
+export function pickPartyTarget(party: GameSnapshot["playerParty"], intent: "revive" | "heal" | "switch"): number {
+  if (intent === "revive") return party.findIndex((p) => p.fainted);
+  let target = -1;
+  if (intent === "heal") {
+    let worst = Infinity;
+    party.forEach((p, i) => { if (!p.fainted) { const hp = p.hpRatio ?? 1; if (hp < worst) { worst = hp; target = i; } } });
+  } else {
+    let best = -1;
+    party.forEach((p, i) => { if (!p.fainted) { const hp = p.hpRatio ?? 1; if (hp > best) { best = hp; target = i; } } });
+  }
+  return target;
+}
+
 /** Reset internal policy state (test seam). */
 export function resetPolicy(): void {
   skipNextReward = false;
   acceptNextConfirm = false;
+  pendingApply = null;
   resetCatch();
 }
 
@@ -173,7 +206,8 @@ async function handleReward(s: GameSnapshot): Promise<void> {
   }
 
   const h = getActiveHandler();
-  const best = bestRewardIndex(readRewardOptions(h));
+  const opts = readRewardOptions(h);
+  const best = bestRewardIndex(opts);
 
   // Row unreadable (still animating / shop-only) → just take whatever's highlighted.
   if (!best) {
@@ -193,6 +227,8 @@ async function handleReward(s: GameSnapshot): Promise<void> {
   const cur = s.cursor ?? 0;
   if (cur < best.index) { await press(Button.RIGHT, "reward:nav-right"); return; }
   if (cur > best.index) { await press(Button.LEFT, "reward:nav-left"); return; }
+  // Remember if this reward needs a PARTY target so handleParty aims it correctly.
+  pendingApply = applyKind(opts[best.index]?.id);
   await press(Button.ACTION, "reward:take-best");
 }
 
@@ -210,8 +246,10 @@ async function handleParty(s: GameSnapshot): Promise<void> {
 
   if (h.optionsMode === true && Array.isArray(h.options)) {
     const opts: number[] = h.options;
-    let target = opts.indexOf(PARTY_SEND_OUT);
-    if (target < 0) target = opts.indexOf(PARTY_APPLY);
+    // When applying an item prefer APPLY; when switching prefer SEND_OUT.
+    const prefer = pendingApply ? [PARTY_APPLY, PARTY_SEND_OUT] : [PARTY_SEND_OUT, PARTY_APPLY];
+    let target = -1;
+    for (const o of prefer) { const i = opts.indexOf(o); if (i >= 0) { target = i; break; } }
     // Inside an encounter the per-mon menu offers SELECT (PartyUiMode.SELECT) instead —
     // that's the "choose this Pokémon" action the encounter is waiting on.
     if (target < 0 && inMysteryEncounter()) target = opts.indexOf(PARTY_SELECT);
@@ -234,18 +272,14 @@ async function handleParty(s: GameSnapshot): Promise<void> {
     return;
   }
 
-  // Pick the HEALTHIEST member that can still battle (best switch-in; harmless for rewards).
-  const party = s.playerParty;
-  let target = -1;
-  let bestHp = -1;
-  party.forEach((p, i) => {
-    if (!p.fainted) {
-      const hp = p.hpRatio ?? 1;
-      if (hp > bestHp) { bestHp = hp; target = i; }
-    }
-  });
+  // Pick the right target: revive → a FAINTED mon; heal → the MOST-HURT live mon; otherwise
+  // (a switch) → the HEALTHIEST live mon.
+  const intent = pendingApply ?? "switch";
+  const target = pickPartyTarget(s.playerParty, intent);
 
   if (target < 0) {
+    // No valid target (e.g. a revive with nobody fainted) → back out rather than loop on it.
+    if (pendingApply) skipNextReward = true;
     await press(Button.CANCEL, "party:none-usable");
     return;
   }
