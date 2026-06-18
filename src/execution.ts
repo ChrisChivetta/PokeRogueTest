@@ -9,8 +9,9 @@
 import type { GameSnapshot } from "./state";
 import { Button, getActiveHandler } from "./bridge";
 import { press } from "./input";
-import { readRoster } from "./roster";
+import { readRoster, readCandyStarters } from "./roster";
 import { selectTeam } from "./team";
+import { planCandy } from "./candy";
 import { log } from "./log";
 
 /** Labels of the active option/title menu, lowercased; [] if unreadable. */
@@ -61,9 +62,16 @@ export async function driveStartRun(s: GameSnapshot): Promise<void> {
 // OPTION_SELECT, the start CONFIRM, the SAVE_SLOT). We route ALL of them here (by phase name) and
 // drive: scan the 9-col grid to each planned species (reading filteredStarterContainers[cursor]),
 // add it, then SUBMIT to start. The grid is a flat list: DOWN/UP = ±9, LEFT/RIGHT = ±1.
-// (Candy value-reductions are a later refinement — selecting + starting is the core.)
+//
+// Two PHASES per visit: (1) spend candy to shave starter costs (planCandy) via each mon's
+// "Use Candies" → "Reduce Cost" sub-menus — done first so the cheaper carry frees budget; then
+// (2) build the team (computed AFTER reductions) and start.
 
 let planIds: number[] | null = null;
+let candyDone = false;
+let candyAttempts = 0;
+// Bounds the candy phase so a mis-navigation can't loop forever before we move on to the team.
+const MAX_CANDY_ATTEMPTS = 40;
 
 let lastSubmitAt = 0;
 // After SUBMIT, tryStart shows a "confirm start team?" message via the message handler WITHOUT
@@ -72,9 +80,11 @@ let lastSubmitAt = 0;
 // re-SUBMIT during that window or we restart the message and the CONFIRM never appears.
 const SUBMIT_COOLDOWN_MS = 3000;
 
-/** Drop the cached team plan (call when leaving starter select / between runs). */
+/** Drop the cached plan + phase state (call when leaving starter select / between runs). */
 export function resetStarterSelect(): void {
   planIds = null;
+  candyDone = false;
+  candyAttempts = 0;
   lastSubmitAt = 0;
 }
 
@@ -96,11 +106,25 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
   if (s.uiMode === "CONFIRM") { await press(Button.ACTION, "starter:confirm-start"); return; }
   if (s.uiMode === "SAVE_SLOT") { await press(Button.ACTION, "starter:save-slot"); return; }
   if (s.uiMode === "OPTION_SELECT") {
-    // The per-mon menu — pick "Add to Party" (first option), navigating to it if needed.
     const labels: string[] = Array.isArray(h.config?.options)
       ? h.config.options.map((o: any) => (typeof o?.label === "string" ? o.label.toLowerCase() : ""))
       : [];
-    let target = labels.findIndex((l) => l.includes("add to party") || l.includes("add to the party"));
+    const find = (needle: string) => labels.findIndex((l) => l.includes(needle));
+
+    if (!candyDone) {
+      // Candy sub-flow: in the per-mon menu pick "Use Candies"; in the candy menu pick "Reduce
+      // Cost". If the candy menu has no reduction left (maxed/unaffordable), back out to re-plan.
+      const reduce = find("reduce cost");
+      if (reduce >= 0) { await pickVerticalOption(s.cursor ?? 0, reduce, "starter:reduce-cost"); return; }
+      const useCandies = find("use candies");
+      if (useCandies >= 0) { await pickVerticalOption(s.cursor ?? 0, useCandies, "starter:use-candies"); return; }
+      await press(Button.CANCEL, "starter:candy-back");
+      return;
+    }
+
+    // Team phase: pick "Add to Party".
+    let target = find("add to party");
+    if (target < 0) target = find("add to the party");
     if (target < 0) target = 0;
     await pickVerticalOption(s.cursor ?? 0, target, "starter:addmenu");
     return;
@@ -108,16 +132,34 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
   if (s.uiMode !== "STARTER_SELECT") return; // transitional — wait
 
   const containers: any[] = Array.isArray(h.filteredStarterContainers) ? h.filteredStarterContainers : [];
+  const idxOf = (id: number) => containers.findIndex((c) => c?.species?.speciesId === id);
+
+  if (h.filterMode === true) { await press(Button.CANCEL, "starter:exit-filter"); return; }
+
+  // ── Phase 1: spend candy to shave starter costs (carries first), before planning the team so
+  // the cheaper carry frees budget. Each affordable reduction is applied via that mon's menu;
+  // gameData updates after each, so planCandy naturally shrinks until nothing's left.
+  if (!candyDone) {
+    const pending = planCandy(readCandyStarters());
+    const next = pending.find((a) => idxOf(a.speciesId) >= 0);
+    if (!next || candyAttempts >= MAX_CANDY_ATTEMPTS) {
+      candyDone = true; // nothing affordable/reachable (or we've tried enough) → build the team
+    } else {
+      candyAttempts++;
+      const idx = idxOf(next.speciesId);
+      if ((h.cursor ?? 0) === idx) { await press(Button.ACTION, "starter:open-candy-menu"); return; }
+      await stepGridTo(h, idx);
+      return;
+    }
+  }
+
   const teamIds: number[] = Array.isArray(h.starterSpecies)
     ? h.starterSpecies.map((sp: any) => sp?.speciesId).filter((x: any) => typeof x === "number")
     : [];
-  const idxOf = (id: number) => containers.findIndex((c) => c?.species?.speciesId === id);
 
   // Planned species still to add that are actually present in the (filtered) grid.
   const remaining = teamPlan().filter((id) => !teamIds.includes(id) && idxOf(id) >= 0);
 
-  // If somehow on the start/random/filter context, step back into the grid first.
-  if (h.filterMode === true) { await press(Button.CANCEL, "starter:exit-filter"); return; }
   const onStartBtn = h.startCursorObj?.visible === true || h.randomCursorObj?.visible === true;
 
   // Team complete (or nothing addable) → start the run via SUBMIT, then wait out the confirm-start
@@ -134,24 +176,31 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
   // Degenerate safety: nothing planned is addable and team is empty → add whatever's at the cursor.
   if (remaining.length === 0) { await press(Button.ACTION, "starter:add-fallback"); return; }
 
-  // Navigate the grid toward the next target species, then ACTION to open its add menu. The grid
-  // can be large (every owned starter across gens), so we take several steps per call — re-reading
-  // the live cursor between each — rather than one per tick, or a 6-mon team would take minutes.
-  const target = remaining[0];
-  const idx = idxOf(target);
+  // Navigate to the next target species, then ACTION to open its add menu.
+  const idx = idxOf(remaining[0]);
+  if ((h.cursor ?? 0) === idx) { await press(Button.ACTION, "starter:open-add"); return; }
+  await stepGridTo(h, idx);
+}
+
+/** Grid steps taken per driveStarterSelect call (re-reading the cursor each step). */
+const GRID_STEPS_PER_TICK = 8;
+
+/**
+ * Walk the starter grid cursor toward index `idx`, several steps per call (re-reading the live
+ * cursor each step) so a team across the full grid doesn't take minutes. Flat 9-col layout:
+ * DOWN/UP = ±9, LEFT/RIGHT = ±1.
+ */
+async function stepGridTo(h: any, idx: number): Promise<void> {
   const COLS = 9;
   for (let step = 0; step < GRID_STEPS_PER_TICK; step++) {
     const cur = typeof h.cursor === "number" ? h.cursor : 0;
-    if (cur === idx) { await press(Button.ACTION, "starter:open-add"); return; }
+    if (cur === idx) return;
     const [cr, cc] = [Math.floor(cur / COLS), cur % COLS];
     const [tr, tc] = [Math.floor(idx / COLS), idx % COLS];
     if (cr < tr) await press(Button.DOWN, "starter:nav-down");
     else if (cr > tr) await press(Button.UP, "starter:nav-up");
     else if (cc < tc) await press(Button.RIGHT, "starter:nav-right");
     else if (cc > tc) await press(Button.LEFT, "starter:nav-left");
-    else break;
+    else return;
   }
 }
-
-/** Grid steps taken per driveStarterSelect call (re-reading the cursor each step). */
-const GRID_STEPS_PER_TICK = 8;

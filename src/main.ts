@@ -23,11 +23,13 @@ import { step as policyStep } from "./policy";
 import { decideLoopAction } from "./runloop";
 import { driveStartRun, driveStarterSelect, resetStarterSelect } from "./execution";
 import { getCurrentPhaseName } from "./bridge";
-import { planRun } from "./orchestrator";
+import { planRun, summarizeProgress } from "./orchestrator";
 import { readRoster } from "./roster";
+import { checkRunSafety, resetSafety } from "./safety";
 
 let looping = false;
 let lastSummary = "";
+let lastProgress = "";
 let announcedDone = false;
 
 /**
@@ -47,8 +49,30 @@ async function tick(snap: GameSnapshot): Promise<void> {
   resetStarterSelect();
 
   const inRun = snap.battle != null;
-  // Reading the roster is only meaningful at the title (deciding whether we're done).
-  const objectiveDone = snap.uiMode === "TITLE" ? planRun(readRoster()).done : false;
+
+  // Dead-man's switch: halt a wedged run (stuck wave / blown wall-clock) instead of spinning.
+  if (inRun) {
+    const verdict = checkRunSafety(snap);
+    if (verdict.halt) {
+      log.banner(`SAFETY HALT — ${verdict.reason}. Stopping (autoRibbon.start() to resume).`);
+      config.enabled = false;
+      return;
+    }
+  } else {
+    resetSafety(); // fresh caps for the next run
+  }
+
+  // At the title, log ribbon progress (deduped) and decide whether the objective is complete.
+  let objectiveDone = false;
+  if (snap.uiMode === "TITLE") {
+    const plan = planRun(readRoster());
+    objectiveDone = plan.done;
+    const progress = summarizeProgress(plan);
+    if (progress !== lastProgress) {
+      lastProgress = progress;
+      log.info(`[progress] ${progress}`);
+    }
+  }
 
   const action = decideLoopAction({ uiMode: snap.uiMode, enabled: config.enabled, inRun, objectiveDone });
   switch (action) {
