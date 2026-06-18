@@ -1,6 +1,6 @@
 #!/bin/bash
 # ── DigitalOcean droplet user-data (TEMPLATE) ────────────────────────────────
-# Runs once as root on first boot. The launcher (harness/do-launch.sh) fills the @@…@@ markers
+# Runs once as root on first boot. The launcher (harness/do-launch.sh) fills the @@...@@ markers
 # from YOUR machine, so secrets never touch the bot author's session. It: provisions deps + the
 # local PokéRogue build, installs Claude Code, and turns a headless Claude session loose on BOX.md
 # to soak-test and iterate on strategy autonomously. Everything is logged for debugging.

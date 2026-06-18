@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Start the local PokéRogue dev server (background) and run the soak. Run after soak-setup.sh.
 #   bash harness/soak-run.sh
-# Env passthrough: SOAK_HOURS, SOAK_GL (swiftshader|egl|desktop), SOAK_ENABLE_RETRIES, SOAK_HOURS…
+# Env passthrough: SOAK_HOURS, SOAK_GL (swiftshader|egl|desktop), SOAK_ENABLE_RETRIES, SOAK_HOURS...
 set -euo pipefail
 
 BOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -14,7 +14,7 @@ cd "$BOT_DIR" && node build.mjs
 
 # Start the dev server if it isn't already up.
 if ! curl -s -m 2 "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
-  echo "== starting dev server on :$PORT…"
+  echo "== starting dev server on :$PORT..."
   ( cd "$PR_DIR" && VITE_BYPASS_LOGIN=1 npx vite --mode development --host 127.0.0.1 --port "$PORT" > /tmp/vite-soak.log 2>&1 & )
   for i in $(seq 1 60); do curl -s -m 2 "http://127.0.0.1:$PORT/" >/dev/null 2>&1 && break; sleep 1; done
 fi

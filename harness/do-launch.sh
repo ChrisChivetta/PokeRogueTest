@@ -37,7 +37,7 @@ sed -e "s|@@REPO@@|${CLONE_URL}|g" \
     -e "s|@@CLAUDE_TOKEN@@|${CLAUDE_CODE_OAUTH_TOKEN}|g" \
     "$TMPL" > "$USERDATA"
 
-echo "Launching $NAME — $SIZE in $REGION (branch $BRANCH)…"
+echo "Launching $NAME — $SIZE in $REGION (branch $BRANCH)..."
 doctl compute droplet create "$NAME" \
   --image "$IMAGE" --size "$SIZE" --region "$REGION" \
   --ssh-keys "$SSH_KEYS" --user-data-file "$USERDATA" --wait \
