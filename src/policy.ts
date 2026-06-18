@@ -34,11 +34,10 @@ export async function step(s: GameSnapshot): Promise<void> {
     }
 
     case "FIGHT": {
-      const idx = bestMoveIndex(onField(s.playerParty), onField(s.enemyParty));
-      if (idx == null) {
-        await press(Button.CANCEL, "fight:no-move");
-        return;
-      }
+      const lead = onField(s.playerParty);
+      // Out of PP on every move → don't back out (that loops COMMAND↔FIGHT); select the
+      // first slot and let the game force Struggle.
+      const idx = bestMoveIndex(lead, onField(s.enemyParty)) ?? lead?.moves[0]?.index ?? 0;
       const cur = s.cursor ?? 0;
       if (cur !== idx) await moveCursor2x2(cur, idx);
       await press(Button.ACTION, `fight:move${idx}`);

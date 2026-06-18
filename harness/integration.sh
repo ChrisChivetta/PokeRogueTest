@@ -22,10 +22,14 @@ if [ ! -d "$PR/node_modules" ]; then
 fi
 
 mkdir -p "$DEST/bot"
-# Stage the current bot source (browser-only main.ts/hud.ts excluded) + the tests.
+# Stage the current bot source (browser-only main.ts/hud.ts excluded) + the tests/helpers.
 cp "$ROOT"/src/{bridge,state,config,log,input,policy,typechart}.ts "$DEST/bot/"
-cp "$ROOT"/tests/integration/*.test.ts "$DEST/"
+cp "$ROOT"/tests/integration/*.ts "$DEST/"
 
 cd "$PR"
 export PATH="/usr/local/bin:$PATH"
-exec npx vitest run test/tests/auto-ribbon "$@"
+# A bare arg is a name filter scoped to our suite (e.g. `integration.sh battle`).
+if [ "$#" -gt 0 ]; then
+  exec npx vitest run "test/tests/auto-ribbon/$1"
+fi
+exec npx vitest run test/tests/auto-ribbon
