@@ -8,7 +8,7 @@ import { readState } from "./bot/state";
 
 // UI modes where our policy takes an action (vs. waiting on dialogue/transitions).
 const ACTIONABLE = new Set([
-  "COMMAND", "FIGHT", "TARGET_SELECT", "MODIFIER_SELECT", "PARTY", "CONFIRM", "SUMMARY",
+  "COMMAND", "FIGHT", "BALL", "TARGET_SELECT", "MODIFIER_SELECT", "PARTY", "CONFIRM", "SUMMARY",
   "MYSTERY_ENCOUNTER", "OPTION_SELECT",
 ]);
 
@@ -37,9 +37,13 @@ export function driveBot(maxSteps = 40): number {
   let i = 0;
   for (; i < maxSteps; i++) {
     const s = readState();
-    if (process.env.BOT_TRACE && s.uiMode !== __lastMode) {
-      __lastMode = s.uiMode;
-      process.stderr.write(`MODE ${s.uiMode} (cursor=${s.cursor})\n`);
+    if (process.env.BOT_TRACE) {
+      const tag = `${s.uiMode}:${s.cursor}`;
+      if (tag !== __lastMode) {
+        __lastMode = tag;
+        const extra = s.uiMode === "BALL" ? ` balls=[${s.pokeballCounts}]` : "";
+        process.stderr.write(`MODE ${s.uiMode} (cursor=${s.cursor})${extra}\n`);
+      }
     }
     if (!s.ready || !ACTIONABLE.has(s.uiMode)) break;
     if (process.env.BOT_TRACE && s.uiMode === "PARTY") {

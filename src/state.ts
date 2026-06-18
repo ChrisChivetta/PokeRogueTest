@@ -39,6 +39,15 @@ export interface PokemonSnapshot {
   moves: MoveSnapshot[];
   /** True if this mon is currently on the field (not benched). */
   onField: boolean;
+  /** True if this is a boss (segmented shield bar). Enemy-only signal; false otherwise. */
+  isBoss: boolean;
+  /** Remaining boss shield index: 0 === last segment (the only catchable one). null if not a boss. */
+  bossSegmentIndex: number | null;
+  /**
+   * Whether this SPECIES is already recorded in the Pokédex (caughtAttr set). Enemy-only;
+   * null on the player side / when unreadable. `false` => catching it unlocks a new starter.
+   */
+  speciesCaught: boolean | null;
 }
 
 export interface BattleSnapshot {
@@ -145,7 +154,7 @@ function readMoves(p: any): MoveSnapshot[] {
   return out;
 }
 
-function readPokemon(p: any, onField: boolean): PokemonSnapshot {
+function readPokemon(p: any, onField: boolean, speciesCaught: boolean | null = null): PokemonSnapshot {
   const maxHp = num(tryCall<number>(p, "getMaxHp")) ?? num(p?.getMaxHp ? undefined : p?.stats?.[0]) ?? num(p?.maxHp);
   const hp = num(p?.hp);
   const ratioViaGetter = num(tryCall<number>(p, "getHpRatio"));
@@ -170,6 +179,9 @@ function readPokemon(p: any, onField: boolean): PokemonSnapshot {
     ability: str(tryCall<any>(p, "getAbility")?.name) ?? str(p?.getAbility ? undefined : p?.ability?.name),
     moves: readMoves(p),
     onField,
+    isBoss: tryCall<boolean>(p, "isBoss") === true,
+    bossSegmentIndex: tryCall<boolean>(p, "isBoss") === true ? num(p?.bossSegmentIndex) : null,
+    speciesCaught,
   };
 }
 
@@ -183,7 +195,18 @@ function readParty(scene: RawScene, side: "player" | "enemy"): PokemonSnapshot[]
       ? tryCall<any[]>(scene, "getPlayerField") ?? []
       : tryCall<any[]>(scene, "getEnemyField") ?? [];
   const fieldSet = new Set(field.filter(Boolean));
-  return (Array.isArray(party) ? party : []).filter(Boolean).map((p) => readPokemon(p, fieldSet.has(p)));
+  // Pokédex lookup (enemy side only): has this species been caught before? Drives the
+  // "catch new species to unlock a starter" policy. caughtAttr is a bigint (0n => never caught).
+  const dex: any = side === "enemy" ? scene?.gameData?.dexData : null;
+  const caughtOf = (p: any): boolean | null => {
+    if (!dex) return null;
+    const id = p?.species?.speciesId;
+    if (typeof id !== "number") return null;
+    return !!dex[id]?.caughtAttr;
+  };
+  return (Array.isArray(party) ? party : [])
+    .filter(Boolean)
+    .map((p) => readPokemon(p, fieldSet.has(p), caughtOf(p)));
 }
 
 function readBattle(scene: RawScene): BattleSnapshot | null {

@@ -23,6 +23,11 @@ export interface Config {
   /** Hard safety caps (Phase 3 enforces; declared here so the knob exists early). */
   maxTurnsPerWave: number;
   maxWallClockPerRunMs: number;
+
+  /** Throw balls at new (un-caught) species to unlock them as future starters. */
+  catchNewSpecies: boolean;
+  /** Max ball throws at one catch target before giving up and KO-ing it. */
+  catchAttemptsPerTarget: number;
 }
 
 export type LogLevel = "silent" | "info" | "debug";
@@ -36,4 +41,6 @@ export const config: Config = {
   inputDelayMaxMs: 850,
   maxTurnsPerWave: 80,
   maxWallClockPerRunMs: 60 * 60 * 1000, // 1h per run ceiling
+  catchNewSpecies: true,
+  catchAttemptsPerTarget: 3,
 };

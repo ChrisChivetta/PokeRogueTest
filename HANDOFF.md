@@ -76,6 +76,14 @@ Only after reads are confirmed do we wire inputs.
   switch (carry protection), catch (boss last-segment = unlock engine), rewards (priority table),
   Eternatus handler (190–200; never out-stat Eternamax — neutralize/outlast/type-wall). *Verify:
   one full clear, then read `dexData[].ribbons` and confirm every final-party line flipped.*
+  - **Catch ✓ done** — `src/catch.ts` + COMMAND/BALL cases in `src/policy.ts`. Throws at NEW
+    (un-caught) species only; mirrors the game's own ball-legality exactly (wild + single foe +
+    not End Biome; bosses only on the last shield segment `bossSegmentIndex === 0`). Conserves
+    premium balls (cheapest on wilds, up to Rogue on bosses; Master only as last resort), caps
+    throws per target (`config.catchAttemptsPerTarget`, then KOs). State reads `isBoss`/
+    `bossSegmentIndex`/`speciesCaught` (dex `caughtAttr`). Tests: `tests/catch.test.ts` (unit) +
+    `tests/integration/catch.test.ts` (catches a wild + a last-segment boss in the headless game).
+  - **Still open in Phase 2:** reward priority table, the Eternatus/endgame finisher.
 - **Phase 3** — orchestration: team auto-select (lowest-cost Tier-S carry + Eternatus answer +
   cheapest un-ribboned passengers to cost 10), run sequencing, candy routing (reduce carry cost
   first), ribbon tracking, safety. *Verify: N unattended clears, +~4–5 ribbons/clear.*

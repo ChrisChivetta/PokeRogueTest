@@ -20,6 +20,7 @@ import type { GameSnapshot } from "./state";
 import { Button, getActiveHandler, getMysteryEncounter, inMysteryEncounter } from "./bridge";
 import { press, moveCursor2x2 } from "./input";
 import { bestMoveIndex } from "./typechart";
+import { shouldCatch, pickBall, noteCatchAttempt, resetCatch } from "./catch";
 
 const onField = (party: GameSnapshot["playerParty"]) => party.find((p) => p.onField) ?? party[0];
 
@@ -30,8 +31,26 @@ export async function step(s: GameSnapshot): Promise<void> {
   switch (s.uiMode) {
     case "COMMAND": {
       const cur = s.cursor ?? 0;
+      // Catch a new species when we legally can (the unlock engine) — otherwise fight.
+      if (shouldCatch(s)) {
+        if (cur !== 1) await moveCursor2x2(cur, 1); // 1 = BALL (top-right)
+        await press(Button.ACTION, "command:ball");
+        return;
+      }
       if (cur !== 0) await moveCursor2x2(cur, 0); // 0 = FIGHT
       await press(Button.ACTION, "command:fight");
+      return;
+    }
+
+    case "BALL": {
+      // Vertical list: ball tiers 0..4 then a trailing Cancel. Pick a tier, walk to it, throw.
+      const tier = pickBall(s);
+      if (tier == null) { await press(Button.CANCEL, "ball:none"); return; } // shouldn't happen
+      const cur = s.cursor ?? 0;
+      if (cur < tier) { await press(Button.DOWN, "ball:down"); return; }
+      if (cur > tier) { await press(Button.UP, "ball:up"); return; }
+      noteCatchAttempt();
+      await press(Button.ACTION, `ball:throw${tier}`);
       return;
     }
 
@@ -125,6 +144,7 @@ let acceptNextConfirm = false;
 export function resetPolicy(): void {
   skipNextReward = false;
   acceptNextConfirm = false;
+  resetCatch();
 }
 
 /**

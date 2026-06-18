@@ -58,6 +58,26 @@ describe("policy routing", () => {
     expect(rec.presses).toEqual(["nav:2->0", "5:command:fight"]);
   });
 
+  it("COMMAND opens the BALL menu when a new species is catchable", async () => {
+    const wildFoe = p({ onField: true, speciesId: 25, speciesCaught: false, isBoss: false, bossSegmentIndex: null });
+    await step(snap({
+      uiMode: "COMMAND", cursor: 0, enemyParty: [wildFoe], pokeballCounts: [5, 0, 0, 0, 0],
+      battle: { waveIndex: 5, isTrainer: false } as any,
+    }));
+    expect(rec.presses).toEqual(["nav:0->1", "5:command:ball"]); // 1 = BALL
+  });
+
+  it("BALL walks to the chosen tier and throws", async () => {
+    // Cheapest available is Great (index 1) since Poké is empty; from cursor 0 → DOWN, then throw.
+    await step(snap({ uiMode: "BALL", cursor: 0, enemyParty: [p({ onField: true })],
+      pokeballCounts: [0, 2, 0, 0, 0] }));
+    expect(rec.presses).toEqual(["1:ball:down"]);
+    rec.presses = [];
+    await step(snap({ uiMode: "BALL", cursor: 1, enemyParty: [p({ onField: true })],
+      pokeballCounts: [0, 2, 0, 0, 0] }));
+    expect(rec.presses).toEqual(["5:ball:throw1"]);
+  });
+
   it("FIGHT navigates to and selects the best move", async () => {
     const lead = p({ onField: true, types: ["grass"], moves: [
       { index: 0, type: "normal", power: 40, pp: 10 },
