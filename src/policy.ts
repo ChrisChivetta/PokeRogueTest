@@ -5,17 +5,19 @@
 // into a stuck state. So we only advance dialogue when the handler is genuinely waiting
 // (awaitingActionInput), handle actionable modes explicitly, and otherwise wait.
 //
-//   • COMMAND          → choose FIGHT
-//   • FIGHT            → best PP-aware, type-effective move
-//   • TARGET_SELECT    → default target
-//   • MODIFIER_SELECT  → take the highlighted reward (free items keep the run alive)
-//   • PARTY            → bring in / apply to a usable mon (faint-switch + reward target)
-//   • CONFIRM          → decline optional prompts (learn-move) to keep moveset stable
-//   • awaiting input   → advance dialogue
-//   • everything else  → wait
+//   • COMMAND            → choose FIGHT
+//   • FIGHT              → best PP-aware, type-effective move
+//   • TARGET_SELECT      → default target
+//   • MODIFIER_SELECT    → take the highlighted reward (free items keep the run alive)
+//   • PARTY              → bring in / apply to a usable mon (faint-switch + reward target)
+//   • CONFIRM            → decline optional prompts (learn-move) to keep moveset stable
+//   • MYSTERY_ENCOUNTER  → pick the run-safest curated option (heal > free reward > leave)
+//   • OPTION_SELECT (ME) → accept a secondary sub-choice inside an encounter
+//   • awaiting input     → advance dialogue
+//   • everything else    → wait
 
 import type { GameSnapshot } from "./state";
-import { Button, getActiveHandler } from "./bridge";
+import { Button, getActiveHandler, getMysteryEncounter, inMysteryEncounter } from "./bridge";
 import { press, moveCursor2x2 } from "./input";
 import { bestMoveIndex } from "./typechart";
 
@@ -65,6 +67,20 @@ export async function step(s: GameSnapshot): Promise<void> {
       await handleParty(s);
       return;
 
+    case "MYSTERY_ENCOUNTER":
+      await handleMysteryEncounter(s);
+      return;
+
+    case "OPTION_SELECT":
+      // A secondary sub-choice spawned inside a mystery encounter (e.g. Field Trip's
+      // move list). The encounters we opt into make every sub-choice safe, so accept the
+      // highlighted one. Outside an encounter we never open option menus, so leave them be.
+      if (inMysteryEncounter()) {
+        await press(Button.ACTION, "me:suboption");
+        return;
+      }
+      break;
+
     case "CONFIRM":
       // Accept our own skip confirmation; decline everything else (e.g. learn-a-move).
       if (acceptNextConfirm) {
@@ -96,6 +112,7 @@ export async function step(s: GameSnapshot): Promise<void> {
 // we locate the option we want and navigate to it explicitly.
 const PARTY_SEND_OUT = 0; // switch this mon in (faint-switch / switch)
 const PARTY_APPLY = 3; // apply the reward item to this mon
+const PARTY_SELECT = 13; // choose this mon for a mystery-encounter option (PartyUiMode.SELECT)
 
 // Set when a reward's target menu offers neither SEND_OUT nor APPLY (a TM / move-
 // replacement we won't handle in Phase 1). We then back out of the party and skip the
@@ -126,6 +143,9 @@ async function handleParty(s: GameSnapshot): Promise<void> {
     const opts: number[] = h.options;
     let target = opts.indexOf(PARTY_SEND_OUT);
     if (target < 0) target = opts.indexOf(PARTY_APPLY);
+    // Inside an encounter the per-mon menu offers SELECT (PartyUiMode.SELECT) instead —
+    // that's the "choose this Pokémon" action the encounter is waiting on.
+    if (target < 0 && inMysteryEncounter()) target = opts.indexOf(PARTY_SELECT);
     if (target < 0) {
       // No clean action (e.g. a TM's TEACH-only menu) → abandon this reward.
       skipNextReward = true;
@@ -165,4 +185,94 @@ async function handleParty(s: GameSnapshot): Promise<void> {
   if (cur < target) { await press(Button.DOWN, "party:nav"); return; }
   if (cur > target) { await press(Button.UP, "party:nav"); return; }
   await press(Button.ACTION, "party:open-options");
+}
+
+// ── Mystery encounters ───────────────────────────────────────────────────────
+// Detection is free: the bridge resolves the MYSTERY_ENCOUNTER UI mode and parks the
+// encounter on currentBattle.mysteryEncounter. Resolution picks the option MOST FAVORABLE
+// TO COMPLETING A RUN, curated from the game source. The unattended priorities are, in
+// order: (1) a free FULL HEAL, (2) a free reward with no battle/secondary, (3) a safe
+// LEAVE/REFUSE, (4) the easiest winnable BATTLE when there's no safe exit. We never pick
+// an option that sacrifices, trades away, or transforms a party member (those can end a
+// ribbon run), and we avoid gambles.
+//
+// MysteryEncounterOptionMode (src/enums/mystery-encounter-option-mode.ts): DEFAULT=0,
+// DISABLED_OR_DEFAULT=1, DEFAULT_OR_SPECIAL=2, DISABLED_OR_SPECIAL=3. Modes 1 & 3 are
+// UNSELECTABLE when their requirement isn't met — so each entry below is an ORDERED list
+// of fallbacks and we take the first option that's actually selectable.
+const ME_DISABLED_MODES = new Set([1, 3]); // DISABLED_OR_DEFAULT, DISABLED_OR_SPECIAL
+
+// MysteryEncounterType (0-indexed, src/enums/mystery-encounter-type.ts) → preferred
+// 0-indexed option(s). Comments name the chosen option and why it favors finishing a run.
+const FAVORABLE_ME_OPTION: Record<number, number[]> = {
+  0: [0], // MYSTERIOUS_CHALLENGERS — no exit; take the easiest (standard) battle
+  1: [1], // MYSTERIOUS_CHEST — leave (the "open" gamble can KO a party member)
+  2: [1], // DARK_DEAL — refuse (accepting removes a party member)
+  3: [2], // FIGHT_OR_FLIGHT — leave (skip the tough optional battle)
+  4: [1], // SLUMBERING_SNORLAX — wait → full party heal
+  5: [3], // TRAINING_SESSION — leave
+  6: [1, 0, 2, 3], // DEPARTMENT_STORE_SALE — free shop (vitamins first)
+  7: [2], // SHADY_VITAMIN_DEALER — leave
+  8: [0, 1, 2], // FIELD_TRIP — no exit, but zero-risk; resolved via the secondary select
+  9: [1], // SAFARI_ZONE — leave
+  10: [0, 1, 2], // LOST_AT_SEA — a Water/Flying mon escorts you out free (else wander)
+  11: [2, 1, 0], // FIERY_FALLOUT — fire-resist mons end it free; else hunker; else battle
+  12: [0, 1], // THE_STRONG_STUFF — approach (no battle)
+  13: [1], // THE_POKEMON_SALESMAN — refuse (don't drain money)
+  14: [1, 2], // AN_OFFER_YOU_CANT_REFUSE — extort (free) if able, else leave (never option 1: it costs your strongest mon)
+  15: [0, 1, 2], // DELIBIRDY — give money for a gift held item (cheapest trade)
+  16: [1, 0], // ABSOLUTE_AVARICE — reason with it (no battle)
+  17: [1], // A_TRAINERS_TEST — refuse → full heal party + egg
+  18: [1, 0], // TRASH_TO_TREASURE — dig for items (no battle)
+  19: [2], // BERRIES_ABOUND — leave (skip the tough battle)
+  20: [1], // CLOWNING_AROUND — remain unprovoked (no battle)
+  21: [0, 1, 2], // PART_TIMER — make deliveries (earn money, no battle)
+  22: [1, 0], // DANCING_LESSONS — learn the dance (no battle)
+  23: [2], // WEIRD_DREAM — leave (option 1 permanently transforms your whole team; option 2 is a tough battle)
+  24: [1], // THE_WINSTRATE_CHALLENGE — refuse → full heal party + rarer candy
+  25: [2, 0, 1], // TELEPORTING_HIJINKS — inspect → a normal (winnable) battle
+  26: [1, 0], // BUG_TYPE_SUPERFAN — show bug-types for a free gift if able, else battle
+  27: [1], // FUN_AND_GAMES — leave
+  28: [1, 2, 0], // UNCOMMON_BREED — befriend with food if able, else battle
+  29: [3], // GLOBAL_TRADE_SYSTEM — leave (never trade away the starter being ribboned)
+  30: [0], // THE_EXPERT_POKEMON_BREEDER — no exit; battle with the first option
+};
+
+/**
+ * Resolve a mystery encounter. The ME option grid is the same 2×2 layout as COMMAND/FIGHT
+ * (0=TL, 1=TR, 2=BL, 3=BR) plus a trailing "view party" button at index === option count,
+ * which we never want. Navigation (UP/DOWN/LEFT/RIGHT) is NOT subject to the encounter's
+ * ~1s input block — only ACTION is — so we walk the cursor to the chosen option with
+ * RIGHT/DOWN one step per call, then press ACTION (which simply no-ops and is retried by
+ * the next tick until the block lifts).
+ */
+async function handleMysteryEncounter(s: GameSnapshot): Promise<void> {
+  const h = getActiveHandler();
+  const opts: any[] = Array.isArray(h?.encounterOptions) ? h.encounterOptions : [];
+  const n = opts.length;
+  if (n === 0) return; // handler not populated yet — wait a tick
+
+  const reqs: boolean[] = Array.isArray(h.optionsMeetsReqs) ? h.optionsMeetsReqs : [];
+  const selectable = (i: number): boolean => {
+    if (i < 0 || i >= n) return false;
+    if (reqs[i]) return true; // requirement met → always selectable
+    return !ME_DISABLED_MODES.has(opts[i]?.optionMode); // unmet req only blocks the DISABLED_* modes
+  };
+
+  const type = getMysteryEncounter()?.encounterType;
+  const prefs = (typeof type === "number" && FAVORABLE_ME_OPTION[type]) || [];
+  let target = prefs.find(selectable);
+  if (target == null) for (let i = 0; i < n && target == null; i++) if (selectable(i)) target = i;
+  if (target == null) target = 0; // nothing selectable (shouldn't happen) — fall back to first
+
+  const cur = typeof h.getCursor === "function" ? h.getCursor() : (s.cursor ?? 0);
+  // Defensive: if the cursor is parked on the trailing view-party button, step back into
+  // the grid (DOWN lands on option 1) rather than pressing ACTION and opening the party.
+  if (cur >= n) { await press(Button.DOWN, "me:leave-party-button"); return; }
+
+  const col = (i: number) => i % 2;
+  const row = (i: number) => (i < 2 ? 0 : 1);
+  if (col(cur) < col(target)) { await press(Button.RIGHT, "me:nav-right"); return; }
+  if (row(cur) < row(target)) { await press(Button.DOWN, "me:nav-down"); return; }
+  await press(Button.ACTION, `me:option${target}`);
 }

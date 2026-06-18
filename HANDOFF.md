@@ -81,6 +81,12 @@ Only after reads are confirmed do we wire inputs.
   first), ribbon tracking, safety. *Verify: N unattended clears, +~4–5 ribbons/clear.*
 - **Phase 4** — hardening: edge cases (doubles, odd encounters, shop variants), recovery from a
   lost run, local-instance fallback (`@match localhost`). *Verify: long unattended session.*
+  - **Mystery encounters ✓ done** — detection (UI mode `MYSTERY_ENCOUNTER`) + resolution in
+    `src/policy.ts`. All 30 encounter types curated from game source to the most run-favorable,
+    no-stall option (`FAVORABLE_ME_OPTION`): heal > free reward > safe leave > easiest winnable
+    battle; never sacrifices/trades/transforms a party member. Requirement-gated options fall
+    back automatically; secondary party/sub-option selects (e.g. Field Trip) are driven via the
+    PARTY `SELECT` + `OPTION_SELECT` cases. Covered by `tests/integration/mystery.test.ts`.
 
 ## Core mechanics (verified against game source — these justify the whole approach)
 

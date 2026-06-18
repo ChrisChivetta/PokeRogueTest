@@ -8,11 +8,17 @@ vi.mock("../src/input", () => ({
   sleep: vi.fn(async () => {}),
 }));
 
-// Control the live handler (PARTY internals) while keeping the real Button values.
+// Control the live handler (PARTY / ME internals) while keeping the real Button values.
 const hRef = vi.hoisted(() => ({ current: null as any }));
+const meRef = vi.hoisted(() => ({ current: null as any }));
 vi.mock("../src/bridge", async (orig) => {
   const actual = await orig<typeof import("../src/bridge")>();
-  return { ...actual, getActiveHandler: () => hRef.current };
+  return {
+    ...actual,
+    getActiveHandler: () => hRef.current,
+    getMysteryEncounter: () => meRef.current,
+    inMysteryEncounter: () => meRef.current != null,
+  };
 });
 
 import { resetPolicy, step } from "../src/policy";
@@ -25,7 +31,16 @@ const snap = (o: Partial<GameSnapshot>): GameSnapshot =>
 const p = (o: any) => ({ name: "p", fainted: false, hpRatio: 1, onField: false, types: [], moves: [], ...o });
 
 // Button values (from bridge): UP0 DOWN1 LEFT2 RIGHT3 SUBMIT4 ACTION5 CANCEL6
-beforeEach(() => { rec.presses = []; hRef.current = null; resetPolicy(); });
+beforeEach(() => { rec.presses = []; hRef.current = null; meRef.current = null; resetPolicy(); });
+
+// Build a fake MysteryEncounterUiHandler. `modes`/`reqs` describe each option; cursor is
+// the current grid position. Mirrors the real handler's getCursor()/encounterOptions/
+// optionsMeetsReqs shape (see src/ui/handlers/mystery-encounter-ui-handler.ts).
+const meHandler = (modes: number[], reqs: boolean[], cursor = 0) => ({
+  encounterOptions: modes.map((optionMode) => ({ optionMode })),
+  optionsMeetsReqs: reqs,
+  getCursor: () => cursor,
+});
 
 describe("policy routing", () => {
   it("does nothing when not ready", async () => {
@@ -127,5 +142,76 @@ describe("PARTY option targeting (the previously-buggy path)", () => {
     const party = [p({ hpRatio: 1 }), p({ hpRatio: 0.3 })];
     await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: party }));
     expect(rec.presses).toEqual(["5:party:open-options"]); // index 0 is healthiest, cursor already there
+  });
+
+  it("selects the chosen member for a mystery-encounter secondary pick (SELECT, not abandon)", async () => {
+    meRef.current = { encounterType: 8 }; // inside an encounter (Field Trip)
+    // PartyUiMode.SELECT menu: [SELECT(13), SUMMARY(6), CANCEL(-1)], cursor on SELECT.
+    hRef.current = { optionsMode: true, options: [13, 6, -1], optionsCursor: 0 };
+    await step(snap({ uiMode: "PARTY" }));
+    expect(rec.presses).toEqual(["5:party:select-option"]);
+  });
+});
+
+describe("mystery encounters", () => {
+  // Button values: UP0 DOWN1 LEFT2 RIGHT3 ACTION5
+  it("leaves the Mysterious Chest (navigates to the safe option and confirms)", async () => {
+    meRef.current = { encounterType: 1 }; // MYSTERIOUS_CHEST → leave = option index 1
+    hRef.current = meHandler([0, 0], [true, true], 0); // 2 plain options, cursor at TL(0)
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["3:me:nav-right"]); // RIGHT toward index 1
+
+    rec.presses = [];
+    hRef.current = meHandler([0, 0], [true, true], 1); // now on index 1
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["5:me:option1"]);
+  });
+
+  it("takes the free full-heal refusal at A Trainer's Test", async () => {
+    meRef.current = { encounterType: 17 }; // A_TRAINERS_TEST → refuse (full heal) = index 1
+    hRef.current = meHandler([0, 0], [true, true], 0);
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["3:me:nav-right"]);
+  });
+
+  it("never sacrifices a party member at Dark Deal (declines)", async () => {
+    meRef.current = { encounterType: 2 }; // DARK_DEAL → refuse = index 1 (NOT index 0 = accept)
+    hRef.current = meHandler([0, 0], [true, true], 0);
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["3:me:nav-right"]); // moving AWAY from the accept option
+  });
+
+  it("falls back past a requirement-gated option to the next favorable one", async () => {
+    // AN_OFFER_YOU_CANT_REFUSE → prefs [1 (extort, special), 2 (leave)]. With the extort
+    // requirement unmet (DISABLED_OR_SPECIAL), it must skip to Leave at index 2.
+    meRef.current = { encounterType: 14 };
+    hRef.current = meHandler([0, 3, 0], [false, false, true], 0); // option 1 disabled+unmet
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["1:me:nav-down"]); // DOWN toward index 2 (bottom-left)
+  });
+
+  it("uses a requirement-gated option when its requirement IS met", async () => {
+    meRef.current = { encounterType: 14 };
+    hRef.current = meHandler([0, 3, 0], [false, true, true], 0); // extort now available
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["3:me:nav-right"]); // RIGHT toward index 1 (extort)
+  });
+
+  it("steps off the view-party button instead of opening the party screen", async () => {
+    meRef.current = { encounterType: 1 };
+    hRef.current = meHandler([0, 0], [true, true], 2); // cursor parked on view-party (index === n)
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["1:me:leave-party-button"]);
+  });
+
+  it("accepts an encounter sub-choice (OPTION_SELECT) only while inside an encounter", async () => {
+    meRef.current = { encounterType: 8 };
+    await step(snap({ uiMode: "OPTION_SELECT" }));
+    expect(rec.presses).toEqual(["5:me:suboption"]);
+
+    rec.presses = [];
+    meRef.current = null; // outside an encounter, don't touch option menus
+    await step(snap({ uiMode: "OPTION_SELECT" }));
+    expect(rec.presses).toEqual([]);
   });
 });

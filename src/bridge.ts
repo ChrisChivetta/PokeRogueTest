@@ -313,6 +313,21 @@ export function getActiveHandler(): any | null {
   return getScene()?.ui?.getHandler?.() ?? null;
 }
 
+/**
+ * The mystery encounter active on the current wave, or null. PokéRogue parks the
+ * encounter definition on `currentBattle.mysteryEncounter` for the whole wave (it
+ * persists through the option screen and any secondary party/sub-option selects), so
+ * this doubles as "are we resolving an encounter right now?" — see inMysteryEncounter.
+ */
+export function getMysteryEncounter(): any | null {
+  return getScene()?.currentBattle?.mysteryEncounter ?? null;
+}
+
+/** True while a mystery encounter is being resolved on the current wave. */
+export function inMysteryEncounter(): boolean {
+  return getMysteryEncounter() != null;
+}
+
 /** Reset the cached scene. Call if the bridge starts returning stale/dead handles. */
 export function resetBridge(): void {
   cached = null;

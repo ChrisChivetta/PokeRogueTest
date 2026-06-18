@@ -9,6 +9,7 @@ import { readState } from "./bot/state";
 // UI modes where our policy takes an action (vs. waiting on dialogue/transitions).
 const ACTIONABLE = new Set([
   "COMMAND", "FIGHT", "TARGET_SELECT", "MODIFIER_SELECT", "PARTY", "CONFIRM", "SUMMARY",
+  "MYSTERY_ENCOUNTER", "OPTION_SELECT",
 ]);
 
 /** Point the bridge at the test scene and make input synchronous (processInput is sync; drop pacing). */
@@ -31,10 +32,15 @@ export function detachBot(): void {
  * leaves the actionable modes (turn queued / dialogue / transition) or hit the cap.
  * Returns the number of steps taken (for sanity assertions).
  */
+let __lastMode = "";
 export function driveBot(maxSteps = 40): number {
   let i = 0;
   for (; i < maxSteps; i++) {
     const s = readState();
+    if (process.env.BOT_TRACE && s.uiMode !== __lastMode) {
+      __lastMode = s.uiMode;
+      process.stderr.write(`MODE ${s.uiMode} (cursor=${s.cursor})\n`);
+    }
     if (!s.ready || !ACTIONABLE.has(s.uiMode)) break;
     if (process.env.BOT_TRACE && s.uiMode === "PARTY") {
       const h: any = getActiveHandler();
