@@ -4,8 +4,9 @@ import { RibbonData } from "#system/ribbons/ribbon-data";
 import Phaser from "phaser";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { __setSceneForTest } from "./bot/bridge";
-import { readRoster, CLASSIC_RIBBON } from "./bot/roster";
+import { readRoster, readCandyStarters, CLASSIC_RIBBON } from "./bot/roster";
 import { selectTeam } from "./bot/team";
+import { planCandy } from "./bot/candy";
 
 // Validates the roster reader against a REAL (headless) gameData, and that the pure team
 // selector produces a legal plan from it. Catches drift in the gameData accessors the
@@ -59,5 +60,21 @@ describe("auto-ribbon — roster + team selection", () => {
     expect(plan.team.length).toBeGreaterThanOrEqual(1);
     expect(plan.team.length).toBeLessThanOrEqual(6);
     expect(plan.totalCost).toBeLessThanOrEqual(10);
+  });
+
+  it("reads candy state and routes a granted candy stash into a cost reduction", async () => {
+    await game.classicMode.startBattle([SpeciesId.BULBASAUR]);
+    __setSceneForTest(game.scene);
+
+    const candyStarters = readCandyStarters();
+    const bulba = candyStarters.find((s) => s.speciesId === SpeciesId.BULBASAUR)!;
+    expect(bulba.baseCost).toBeGreaterThanOrEqual(1);
+    expect(bulba.baseCost).toBeLessThanOrEqual(10);
+
+    // Grant plenty of candy; the router should recommend reducing Bulbasaur's cost.
+    game.scene.gameData.starterData[SpeciesId.BULBASAUR].candyCount = 999;
+    game.scene.gameData.starterData[SpeciesId.BULBASAUR].valueReduction = 0;
+    const actions = planCandy(readCandyStarters());
+    expect(actions.some((a) => a.speciesId === SpeciesId.BULBASAUR && a.toReduction === 1)).toBe(true);
   });
 });

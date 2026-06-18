@@ -7,6 +7,7 @@
 
 import { getScene } from "./bridge";
 import { CARRY_RANK, type StarterInfo } from "./team";
+import type { CandyStarter } from "./candy";
 
 /** RibbonData.CLASSIC (src/system/ribbons/ribbon-data.ts) — the bit a Classic clear awards. */
 export const CLASSIC_RIBBON = 0x0008000000n;
@@ -52,6 +53,42 @@ export function readRoster(): StarterInfo[] {
       cost,
       ribboned: (readRibbons(dex) & CLASSIC_RIBBON) !== 0n,
       carryRank: CARRY_RANK[speciesId] ?? null,
+    });
+  }
+  return out;
+}
+
+/**
+ * Snapshot owned starters with the candy state needed for candy routing: base (unreduced) cost
+ * — read via getSpeciesStarterValue(id, 0) — plus the species' candy count and reductions used.
+ */
+export function readCandyStarters(): CandyStarter[] {
+  const gd: any = getScene()?.gameData;
+  if (!gd || !gd.dexData || !gd.starterData || typeof gd.getSpeciesStarterValue !== "function") {
+    return [];
+  }
+
+  const out: CandyStarter[] = [];
+  for (const key of Object.keys(gd.starterData)) {
+    const speciesId = Number(key);
+    if (!Number.isInteger(speciesId)) continue;
+    if (!gd.dexData[speciesId]?.caughtAttr) continue;
+
+    let baseCost: number;
+    try {
+      baseCost = gd.getSpeciesStarterValue(speciesId, 0); // reduction 0 → unreduced cost
+    } catch {
+      continue;
+    }
+    if (!Number.isFinite(baseCost)) continue;
+
+    const sd = gd.starterData[speciesId];
+    out.push({
+      speciesId,
+      baseCost,
+      candyCount: Number(sd?.candyCount) || 0,
+      valueReduction: Number(sd?.valueReduction) || 0,
+      isCarry: speciesId in CARRY_RANK,
     });
   }
   return out;

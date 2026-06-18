@@ -100,6 +100,18 @@ Only after reads are confirmed do we wire inputs.
 - **Phase 3** — orchestration: team auto-select (lowest-cost Tier-S carry + Eternatus answer +
   cheapest un-ribboned passengers to cost 10), run sequencing, candy routing (reduce carry cost
   first), ribbon tracking, safety. *Verify: N unattended clears, +~4–5 ribbons/clear.*
+  - **Planning core ✓ done** — all PURE + unit-tested. `src/team.ts` `selectTeam()` (carry +
+    cheapest un-ribboned passengers under the 10-pt budget; `CARRY_RANK` shortlist),
+    `src/orchestrator.ts` `planRun()` (progress + done-detection + next team), `src/candy.ts`
+    `planCandy()` (route a species' candy into cost reductions, carries first; table from
+    `data/balance/starters.ts`). `src/roster.ts` reads the live gameData into these
+    (`readRoster`/`readCandyStarters` — owned starters, effective+base cost, ribbon status,
+    candy/valueReduction). Tests: `tests/{team,orchestrator,candy}.test.ts` +
+    `tests/integration/roster.test.ts` (against real headless gameData).
+  - **Still open in Phase 3:** the EXECUTION/glue — drive the title → starter-select UI to enact
+    the team + candy plan, the cross-run loop (play → game-over → record → restart), progress
+    persistence, and the safety caps. These are UI-driving (hard to GameManager-test; need the
+    live harness). The brain that decides WHAT to do is done; what remains is DOING it.
 - **Phase 4** — hardening: edge cases (doubles, odd encounters, shop variants), recovery from a
   lost run, local-instance fallback (`@match localhost`). *Verify: long unattended session.*
   - **Mystery encounters ✓ done** — detection (UI mode `MYSTERY_ENCOUNTER`) + resolution in

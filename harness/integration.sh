@@ -23,7 +23,7 @@ fi
 
 mkdir -p "$DEST/bot"
 # Stage the current bot source (browser-only main.ts/hud.ts excluded) + the tests/helpers.
-cp "$ROOT"/src/{bridge,state,config,log,input,policy,typechart,catch,rewards,team,roster}.ts "$DEST/bot/"
+cp "$ROOT"/src/{bridge,state,config,log,input,policy,typechart,catch,rewards,team,roster,orchestrator,candy}.ts "$DEST/bot/"
 cp "$ROOT"/tests/integration/*.ts "$DEST/"
 
 cd "$PR"
