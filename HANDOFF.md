@@ -120,14 +120,25 @@ Only after reads are confirmed do we wire inputs.
     (`readRoster`/`readCandyStarters` — owned starters, effective+base cost, ribbon status,
     candy/valueReduction). Tests: `tests/{team,orchestrator,candy}.test.ts` +
     `tests/integration/roster.test.ts` (against real headless gameData).
-  - **Still open in Phase 3:** the EXECUTION/glue. The cross-run loop's PURE router is done +
-    tested (`src/runloop.ts` `decideLoopAction()` — routes each screen to PLAY / START_RUN /
-    SELECT_TEAM / STOP_DONE / WAIT; the run lifecycle falls out via TITLE→START_RUN). What's left
-    is the version-fragile UI ADAPTERS it implies — navigating the title screen into a Classic run,
-    and driving the starter-select grid to enact the team + candy plan — plus progress persistence
-    and the safety caps. These can't be GameManager-tested (upstream's own starter-select UI test
-    is `describe.todo`, disabled for "state corruption"), so they're a LIVE-HARNESS slice. The
-    brain that decides WHAT to do is complete and tested; only the screen-driving DOING-it remains.
+  - **Run-loop router ✓ done** — `src/runloop.ts` `decideLoopAction()` routes each screen to
+    PLAY / START_RUN / SELECT_TEAM / STOP_DONE / WAIT (`inRun` disambiguates the shared
+    OPTION_SELECT/CONFIRM/MESSAGE modes); `src/main.ts` `tick()` dispatches, routing the whole
+    `SelectStarterPhase` to the team driver by phase name. Pure parts unit-tested.
+  - **Execution glue ✓ LIVE-VALIDATED** — `src/execution.ts`. `driveStartRun()` navigates the
+    title flow (intro → gender → New Game → Classic) and `driveStarterSelect()` enacts the team:
+    scans the real 9-col starter grid (reading `filteredStarterContainers[cursor]`), adds each
+    planned species, then SUBMITs through the confirm-start + save-slot to begin the run. Proven
+    end-to-end on the live harness (`npm run smoke:full`): the bot autonomously goes title →
+    builds its planned team on the grid → **starts a Classic run at wave 1** with a non-empty
+    party. Two live-found bugs fixed: slow one-step grid nav (now batches 8 steps/call) and a
+    SUBMIT mash that restarted the (mode-less) confirm-start message before its CONFIRM could open
+    (now a 3s submit cooldown). GameManager can't test any of this (upstream's own starter-select
+    UI test is `describe.todo`), so the smoke harness IS the test.
+  - **Still open in Phase 3:** candy value-reductions DURING starter select (the `planCandy`
+    decisions exist; applying them via the "Use Candies" sub-menu is unbuilt); progress
+    persistence / a run-count log; and the safety caps (`maxTurnsPerWave`, wall-clock). The
+    cross-run LOOP itself already falls out — a finished run returns to TITLE → START_RUN again,
+    or STOP_DONE when every owned line is ribboned.
 - **Phase 4** — hardening: edge cases (doubles, odd encounters, shop variants), recovery from a
   lost run, local-instance fallback (`@match localhost`). *Verify: long unattended session.*
   - **Mystery encounters ✓ done** — detection (UI mode `MYSTERY_ENCOUNTER`) + resolution in
