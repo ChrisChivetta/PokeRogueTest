@@ -32,7 +32,7 @@ SOAK_HEADED=1 SOAK_GL=auto SOAK_HOURS=1 \             # 2. watch it play (visibl
 `soak-run.sh` rebuilds the bot, starts the local dev server, opens a Chromium window, and turns
 the bot loose. You'll see the game play itself. Telemetry streams to `soak-<timestamp>.jsonl`.
 
-**When it gets stuck in a loop**, the watchdog (default: no progress for 60s) kicks in:
+**When it gets stuck in a loop**, the watchdog (default: no progress for 120s) kicks in:
 
 - writes `stall-<timestamp>.png` (a screenshot of the wedged screen)
 - writes `stall-<timestamp>.txt` (telemetry + the last ~40 buttons the bot pressed)
@@ -50,7 +50,7 @@ you go back to step 1.
 | `SOAK_HEADED` | `0` | `1` = visible window (use this so you can watch) |
 | `SOAK_GL` | `swiftshader` | `auto` on a Mac (real GPU); leave default on Linux |
 | `SOAK_HOURS` | `6` | how long to run before stopping |
-| `SOAK_STALL_SECS` | `60` | flag a stall after this many seconds of no progress |
+| `SOAK_STALL_SECS` | `120` | flag a stall after this many seconds of no progress |
 | `SOAK_STALL_PAUSE` | `1` | `0` = log stalls but keep playing (don't pause) |
 | `SOAK_HUMAN_PACING` | `0` | `1` = shipped human-speed input; `0` = brisk |
 

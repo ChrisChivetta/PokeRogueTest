@@ -14,7 +14,7 @@
 //         SOAK_LOG (default soak-<ts>.jsonl)  — JSONL event log path
 //         SOAK_ENABLE_RETRIES (default 1)     — turn on the game's retry-on-defeat to exercise retries
 //         SOAK_HUMAN_PACING (default 0)       — 1 = shipped human pacing; 0 = brisk (more coverage)
-//         SOAK_STALL_SECS (default 60)        — flag a stall if wave:mode:phase doesn't change for this long
+//         SOAK_STALL_SECS (default 120)       — flag a stall if wave:mode:phase doesn't change for this long
 //         SOAK_STALL_PAUSE (default 1)        — 1 = stop the bot + screenshot on a stall (for live debugging)
 import { chromium } from "playwright";
 import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
@@ -27,7 +27,7 @@ const HEADED = process.env.SOAK_HEADED === "1"; // visible window → real GPU (
 const LOG = process.env.SOAK_LOG ?? `soak-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`;
 const ENABLE_RETRIES = (process.env.SOAK_ENABLE_RETRIES ?? "1") === "1";
 const HUMAN_PACING = (process.env.SOAK_HUMAN_PACING ?? "0") === "1";
-const STALL_SECS = Number(process.env.SOAK_STALL_SECS ?? 60);
+const STALL_SECS = Number(process.env.SOAK_STALL_SECS ?? 120);
 const STALL_PAUSE = (process.env.SOAK_STALL_PAUSE ?? "1") === "1";
 const BUNDLE = "dist/pokerogue-auto-ribbon.user.js";
 
