@@ -28,6 +28,7 @@ import { readRoster } from "./roster";
 import { checkRunSafety, resetSafety } from "./safety";
 import { shouldRetry, noteRetry, retryGeneration, resetRetry, noteWave, retriesTaken } from "./retry";
 import { applyGameSettings } from "./settings";
+import { ballsThrownCount, lastCatchDecision } from "./catch";
 
 let looping = false;
 let lastSummary = "";
@@ -204,7 +205,10 @@ const api = {
       topLevel: levels.length ? Math.max(...levels) : 0,
       foeLevel: foe?.level ?? null,
       foeBoss: foe?.isBoss ?? false,
+      foeCaught: foe?.speciesCaught ?? null,
       retries: retriesTaken(),
+      ballsThrown: ballsThrownCount(),
+      catchDecision: lastCatchDecision(),
       ...this.progress(),
     };
   },

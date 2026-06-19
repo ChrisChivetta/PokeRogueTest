@@ -24,6 +24,19 @@ const END_BIOME_FIRST_WAVE = 191;
 // Per-target throw budget. Keyed so it resets when the foe (or wave) changes.
 let attempts = 0;
 let targetKey = "";
+// Cumulative diagnostics (NOT reset per run) so telemetry can answer "is it actually catching?":
+// total balls released this session + the reason the last shouldCatch() call decided as it did.
+let ballsThrown = 0;
+let lastDecision = "init";
+
+/** Total balls the bot has thrown this session (telemetry: confirms catching is happening). */
+export function ballsThrownCount(): number {
+  return ballsThrown;
+}
+/** Why the most recent shouldCatch() returned what it did (telemetry/diagnostic). */
+export function lastCatchDecision(): string {
+  return lastDecision;
+}
 
 /** Reset catch bookkeeping (test seam; also called from resetPolicy). */
 export function resetCatch(): void {
@@ -40,31 +53,35 @@ const hasAnyBall = (s: GameSnapshot): boolean => ballCounts(s).some((c) => c > 0
  * full legality + worth-it check and the per-target attempt cap.
  */
 export function shouldCatch(s: GameSnapshot): boolean {
-  if (!config.catchNewSpecies) return false;
+  const no = (reason: string): false => { lastDecision = `no: ${reason}`; return false; };
+  if (!config.catchNewSpecies) return no("catchNewSpecies disabled");
   const b = s.battle;
-  if (!b) return false;
-  if (b.isTrainer) return false; // trainers are uncatchable
-  if ((b.waveIndex ?? 0) >= END_BIOME_FIRST_WAVE) return false; // End Biome: uncatchable paradox mons
+  if (!b) return no("no battle");
+  if (b.isTrainer) return no("trainer battle (uncatchable)");
+  if ((b.waveIndex ?? 0) >= END_BIOME_FIRST_WAVE) return no("End Biome (uncatchable)");
 
   const foes = onFieldFoes(s);
-  if (foes.length !== 1) return false; // ball is blocked when more than one foe is on the field
+  if (foes.length !== 1) return no(`${foes.length} foes on field (ball blocked)`);
   const foe = foes[0];
 
-  if (foe.isBoss && foe.bossSegmentIndex !== 0) return false; // bosses: only the last segment (non-Master)
-  if (!hasAnyBall(s)) return false;
+  if (foe.isBoss && foe.bossSegmentIndex !== 0) return no("boss not on last shield segment");
+  if (!hasAnyBall(s)) return no("no balls in stock");
 
   // Decide WHAT's worth a ball. A NEW species is always worth it (unlocks the line even if the
-  // party's full and it gets boxed). A caught-but-un-ribboned mon is only worth it if we can KEEP
-  // it (room in the party) AND it out-costs a swappable member — see worthCatching. (Swap-when-full
-  // is a later step, so we require open room for now.)
+  // party's full and it gets boxed). A caught-but-un-ribboned mon is worth it if there's room to
+  // keep it OR it out-costs a swappable member — see worthCatching.
   if (foe.speciesCaught === false) {
     // new species → always worth a ball
+  } else if (foe.speciesCaught == null) {
+    // Pokédex unreadable (version drift) → don't risk wedging the BALL menu; just fight.
+    return no("speciesCaught unreadable");
   } else {
-    if (!config.catchUnribboned) return false;
+    if (!config.catchUnribboned) return no("already caught; catchUnribboned disabled");
     // Need somewhere to keep it: open room, OR Part B will release a passenger to make room.
-    if (!config.swapWhenPartyFull && s.playerParty.length >= 6) return false;
+    if (!config.swapWhenPartyFull && s.playerParty.length >= 6) return no("caught + party full (no swap)");
     const ctx = readCatchContext();
-    if (!ctx || !worthCatching(ctx)) return false;
+    if (!ctx) return no("catch context unreadable");
+    if (!worthCatching(ctx)) return no("caught + not worth a swap");
   }
 
   // Reset the counter whenever the target changes (new wave / new foe).
@@ -73,7 +90,9 @@ export function shouldCatch(s: GameSnapshot): boolean {
     targetKey = key;
     attempts = 0;
   }
-  return attempts < config.catchAttemptsPerTarget;
+  if (attempts >= config.catchAttemptsPerTarget) return no(`hit attempt cap (${attempts})`);
+  lastDecision = `yes: ${foe.name} (${foe.speciesCaught === false ? "new species" : "un-ribboned"}), attempt ${attempts + 1}`;
+  return true;
 }
 
 /**
@@ -96,6 +115,7 @@ export function pickBall(s: GameSnapshot): number | null {
 /** Record a throw at the current target (call when the ball is actually released). */
 export function noteCatchAttempt(): void {
   attempts++;
+  ballsThrown++;
 }
 
 // ── Catch-for-ribbons value ──────────────────────────────────────────────────
@@ -122,12 +142,14 @@ export interface CatchContext {
 
 /**
  * Is this wild worth a ball for the ribbon objective? PURE. Uncaught → always (unlock + a future
- * ribbon). Already-ribboned → never. Caught-but-un-ribboned → only if it out-costs a replaceable
- * (un-ribboned, non-carry) party member, i.e. it's too expensive to ribbon via the budget team.
+ * ribbon). Already-ribboned → never. Caught-but-un-ribboned → grab it whenever there's open room
+ * to keep it (more un-ribboned candidates on the team is strictly good early), or — when full — if
+ * it out-costs a replaceable (un-ribboned, non-carry) member, i.e. worth swapping a passenger out.
  */
 export function worthCatching(ctx: CatchContext): boolean {
   if (!ctx.caught) return true;
   if (ctx.ribboned) return false;
+  if (ctx.party.length < 6) return true; // room to keep another un-ribboned ribbon candidate
   return ctx.party.some((p) => !p.ribboned && !p.isCarry && p.cost < ctx.cost);
 }
 

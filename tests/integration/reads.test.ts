@@ -56,6 +56,9 @@ describe("auto-ribbon — state reads", () => {
     expect(vineWhip?.type).toBe("grass");
     expect(vineWhip?.pp).toBeGreaterThan(0);
     expect(vineWhip?.power).toBeGreaterThan(0);
+    // Usability flag (drives skipping disabled / out-of-PP moves): a fresh, full-PP attacking
+    // move must read as usable. Validates the PokemonMove.isUsable(p, false, true) shape.
+    expect(vineWhip?.usable).toBe(true);
 
     // Foe
     expect(s.enemyParty[0].name.toLowerCase()).toContain("rattata");

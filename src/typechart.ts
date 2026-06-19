@@ -37,31 +37,30 @@ export function effectiveness(attackType: string, defenderTypes: string[]): numb
 }
 
 /**
- * Choose the best move index for `lead` against `foe`. Damaging moves are scored by
- * type-effectiveness × power; status moves (power ≤ 0) are kept only as a last resort.
- * PP-aware: skips moves with 0 PP. Returns null if no usable move (caller backs out).
+ * Damage-expectation score for one move vs the defender. type-effectiveness × power × STAB ×
+ * accuracy. STAB (1.5×) when the move shares a type with the attacker; accuracy as a hit-chance
+ * factor (treat unreadable/always-hit as 100). 0 if the move can't deal damage / is immune.
+ */
+function moveScore(m: MoveSnapshot, attackerTypes: string[], foeTypes: string[]): number {
+  const power = m.power ?? 0;
+  if (power <= 0) return 0;
+  const eff = m.type ? effectiveness(m.type, foeTypes) : 1;
+  const stab = m.type && attackerTypes.includes(m.type) ? 1.5 : 1;
+  const acc = m.accuracy != null && m.accuracy > 0 ? Math.min(m.accuracy, 100) / 100 : 1;
+  return eff * power * stab * acc;
+}
+
+/** A move we may NOT pick this turn (disabled / 0-PP / Taunt&c.). isUsable already covers PP. */
+const isPickable = (m: MoveSnapshot): boolean => m.usable !== false && !(m.pp != null && m.pp <= 0);
+
+/**
+ * Choose the best move index for `lead` against `foe` (type × power × STAB × accuracy). Only
+ * picks selectable moves (skips disabled / out-of-PP); status moves are a last resort. Returns
+ * null if nothing is usable (caller backs out / lets the game force Struggle).
  */
 export function bestMoveIndex(lead: PokemonSnapshot | undefined, foe: PokemonSnapshot | undefined): number | null {
-  if (!lead || lead.moves.length === 0) return null;
-  const foeTypes = foe?.types ?? [];
-
-  let bestIdx: number | null = null;
-  let bestScore = -Infinity;
-  let statusFallback: number | null = null;
-
-  for (const m of lead.moves as MoveSnapshot[]) {
-    if (m.pp != null && m.pp <= 0) continue; // out of PP
-    const power = m.power ?? 0;
-    if (power <= 0) {
-      if (statusFallback == null) statusFallback = m.index; // remember a usable status move
-      continue;
-    }
-    const eff = m.type ? effectiveness(m.type, foeTypes) : 1;
-    const score = eff * power;
-    if (score > bestScore) { bestScore = score; bestIdx = m.index; }
-  }
-
-  return bestIdx ?? statusFallback;
+  const ranked = rankedMoves(lead, foe);
+  return ranked.length ? ranked[0] : null;
 }
 
 /**
@@ -72,15 +71,15 @@ export function bestMoveIndex(lead: PokemonSnapshot | undefined, foe: PokemonSna
 export function rankedMoves(lead: PokemonSnapshot | undefined, foe: PokemonSnapshot | undefined): number[] {
   if (!lead || lead.moves.length === 0) return [];
   const foeTypes = foe?.types ?? [];
+  const myTypes = lead.types ?? [];
 
   const damaging: { index: number; score: number }[] = [];
   const status: number[] = [];
   for (const m of lead.moves as MoveSnapshot[]) {
-    if (m.pp != null && m.pp <= 0) continue;
-    const power = m.power ?? 0;
-    if (power <= 0) { status.push(m.index); continue; }
-    const eff = m.type ? effectiveness(m.type, foeTypes) : 1;
-    damaging.push({ index: m.index, score: eff * power });
+    if (!isPickable(m)) continue; // disabled / 0-PP / Taunt&c. — can't select it
+    const score = moveScore(m, myTypes, foeTypes);
+    if (score <= 0) { status.push(m.index); continue; } // non-damaging / immune — last resort
+    damaging.push({ index: m.index, score });
   }
   damaging.sort((a, b) => b.score - a.score || a.index - b.index);
   return [...damaging.map((d) => d.index), ...status];

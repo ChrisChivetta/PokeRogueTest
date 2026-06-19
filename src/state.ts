@@ -18,6 +18,8 @@ export interface MoveSnapshot {
   accuracy: number | null;
   /** Index of this move in the Pokémon's moveset (the value FIGHT cursor selects). */
   index: number;
+  /** False if the move can't be selected right now (disabled, out of PP, Taunt/Torment, etc.). */
+  usable: boolean;
 }
 
 export interface PokemonSnapshot {
@@ -141,6 +143,18 @@ function readMoves(p: any): MoveSnapshot[] {
     const ppUsed = num(m?.ppUsed);
     const ppRemaining =
       ppMax != null && ppUsed != null ? ppMax - ppUsed : num(m?.pp); // fallback: explicit pp field
+    // Can this move be picked right now? PokemonMove.isUsable(pokemon, ignorePp, forSelection)
+    // returns [usable, reason] — false for disabled / 0-PP / Taunt/Torment, exactly what the FIGHT
+    // menu greys out. Default to usable if it can't be read (don't hide a valid move).
+    let usable = true;
+    try {
+      if (typeof m.isUsable === "function") {
+        const res = m.isUsable(p, false, true);
+        if (Array.isArray(res)) usable = res[0] !== false;
+      }
+    } catch {
+      /* version drift */
+    }
     out.push({
       name: str(md?.name) ?? str(tryCall<string>(md, "getName")) ?? "?",
       pp: ppRemaining,
@@ -149,6 +163,7 @@ function readMoves(p: any): MoveSnapshot[] {
       power: num(md?.power),
       accuracy: num(md?.accuracy),
       index,
+      usable,
     });
   });
   return out;

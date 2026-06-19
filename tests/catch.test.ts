@@ -102,6 +102,12 @@ describe("worthCatching — catch-for-ribbons value", () => {
     ({ caught: false, ribboned: false, cost: 5, party: [], ...o });
   const member = (o: Partial<CatchContext["party"][number]> = {}) =>
     ({ ribboned: false, cost: 3, isCarry: false, ...o });
+  // Pad a list of "interesting" members out to a FULL party (6) with already-ribboned passengers
+  // (which the swap logic always skips) so a test exercises the full-party swap branch.
+  const full = (...members: ReturnType<typeof member>[]) => {
+    const pad = Array.from({ length: 6 - members.length }, () => member({ ribboned: true, cost: 1 }));
+    return [...members, ...pad];
+  };
 
   it("always worth a ball when the line is un-caught (unlock)", () => {
     expect(worthCatching(ctx({ caught: false }))).toBe(true);
@@ -111,24 +117,29 @@ describe("worthCatching — catch-for-ribbons value", () => {
     expect(worthCatching(ctx({ caught: true, ribboned: true }))).toBe(false);
   });
 
-  it("catches a high-cost un-ribboned mon over a cheaper un-ribboned passenger", () => {
-    expect(worthCatching(ctx({ caught: true, cost: 6, party: [member({ cost: 3 })] }))).toBe(true);
+  it("catches any caught-but-un-ribboned mon while the party has room", () => {
+    // Even a cheap one, and even if it doesn't out-cost anyone — room means a free ribbon candidate.
+    expect(worthCatching(ctx({ caught: true, cost: 1, party: [member({ cost: 5 })] }))).toBe(true);
   });
 
-  it("won't bother if it doesn't out-cost any swappable member", () => {
-    expect(worthCatching(ctx({ caught: true, cost: 3, party: [member({ cost: 3 }), member({ cost: 5 })] }))).toBe(false);
+  it("catches a high-cost un-ribboned mon over a cheaper un-ribboned passenger (full party)", () => {
+    expect(worthCatching(ctx({ caught: true, cost: 6, party: full(member({ cost: 3 })) }))).toBe(true);
   });
 
-  it("never swaps out the carry/sweeper, even if cheaper", () => {
-    expect(worthCatching(ctx({ caught: true, cost: 6, party: [member({ cost: 3, isCarry: true })] }))).toBe(false);
+  it("won't bother if it doesn't out-cost any swappable member (full party)", () => {
+    expect(worthCatching(ctx({ caught: true, cost: 3, party: full(member({ cost: 3 }), member({ cost: 5 })) }))).toBe(false);
   });
 
-  it("never swaps out an already-ribboned member (it's done)", () => {
-    expect(worthCatching(ctx({ caught: true, cost: 6, party: [member({ cost: 3, ribboned: true })] }))).toBe(false);
+  it("never swaps out the carry/sweeper, even if cheaper (full party)", () => {
+    expect(worthCatching(ctx({ caught: true, cost: 6, party: full(member({ cost: 3, isCarry: true })) }))).toBe(false);
   });
 
-  it("caught but no swappable party (e.g. empty) → not worth a ball", () => {
-    expect(worthCatching(ctx({ caught: true, cost: 6, party: [] }))).toBe(false);
+  it("never swaps out an already-ribboned member (it's done) (full party)", () => {
+    expect(worthCatching(ctx({ caught: true, cost: 6, party: full(member({ cost: 3, ribboned: true })) }))).toBe(false);
+  });
+
+  it("caught but full party of non-swappable members → not worth a ball", () => {
+    expect(worthCatching(ctx({ caught: true, cost: 6, party: full() }))).toBe(false);
   });
 });
 

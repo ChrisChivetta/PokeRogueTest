@@ -4,7 +4,7 @@ import type { MoveSnapshot, PokemonSnapshot } from "../src/state";
 
 // Minimal builders — only the fields the type logic reads.
 const move = (p: Partial<MoveSnapshot> & { index: number }): MoveSnapshot => ({
-  name: "m", pp: 10, ppMax: 10, type: null, power: null, accuracy: 100, ...p,
+  name: "m", pp: 10, ppMax: 10, type: null, power: null, accuracy: 100, usable: true, ...p,
 });
 const mon = (types: string[], moves: MoveSnapshot[]): PokemonSnapshot =>
   ({ name: "p", types, moves } as unknown as PokemonSnapshot);
@@ -88,6 +88,34 @@ describe("bestMoveIndex", () => {
   it("returns null when the lead has no usable move", () => {
     const lead = mon(["normal"], [move({ index: 0, type: "normal", power: 40, pp: 0 })]);
     expect(bestMoveIndex(lead, mon(["normal"], []))).toBeNull();
+  });
+
+  it("prefers a STAB move over an equal-power non-STAB move", () => {
+    const lead = mon(["water"], [
+      move({ index: 0, type: "normal", power: 60 }), // 60 (no STAB)
+      move({ index: 1, type: "water", power: 60 }),  // 60 × 1.5 STAB = 90
+    ]);
+    const foe = mon(["normal"], []); // both neutral vs normal
+    expect(bestMoveIndex(lead, foe)).toBe(1);
+  });
+
+  it("weights accuracy as a hit-chance factor", () => {
+    const lead = mon(["normal"], [
+      move({ index: 0, type: "normal", power: 70, accuracy: 100 }), // 70 (×1.5 STAB) = 105
+      move({ index: 1, type: "normal", power: 120, accuracy: 50 }), // 120 ×1.5 ×0.5 = 90
+    ]);
+    const foe = mon(["normal"], []);
+    expect(bestMoveIndex(lead, foe)).toBe(0);
+  });
+
+  it("skips a disabled move (usable=false) even at high power", () => {
+    const lead = mon(["fire"], [
+      move({ index: 0, type: "fire", power: 110, usable: false }), // disabled — can't pick
+      move({ index: 1, type: "fire", power: 40 }),
+    ]);
+    const foe = mon(["grass"], []);
+    expect(bestMoveIndex(lead, foe)).toBe(1);
+    expect(rankedMoves(lead, foe)).toEqual([1]); // the disabled move is dropped entirely
   });
 
   it("with no foe type info, picks highest power", () => {
