@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { shouldCatch, pickBall, noteCatchAttempt, resetCatch, PokeballType, worthCatching } from "../src/catch";
+import { shouldCatch, pickBall, noteCatchAttempt, resetCatch, PokeballType, worthCatching, pickReleaseSlot } from "../src/catch";
 import type { CatchContext } from "../src/catch";
 import { config } from "../src/config";
 import type { GameSnapshot } from "../src/state";
@@ -129,5 +129,18 @@ describe("worthCatching — catch-for-ribbons value", () => {
 
   it("caught but no swappable party (e.g. empty) → not worth a ball", () => {
     expect(worthCatching(ctx({ caught: true, cost: 6, party: [] }))).toBe(false);
+  });
+});
+
+describe("pickReleaseSlot — which passenger to give up (Part B)", () => {
+  const pm = (o: any = {}) => ({ ribboned: false, cost: 3, isCarry: false, ...o });
+  it("releases the cheapest un-ribboned non-carry passenger", () => {
+    expect(pickReleaseSlot([pm({ cost: 5 }), pm({ cost: 2 }), pm({ cost: 4 })])).toBe(1);
+  });
+  it("never releases the carry or an already-ribboned mon", () => {
+    expect(pickReleaseSlot([pm({ cost: 2, isCarry: true }), pm({ cost: 3, ribboned: true }), pm({ cost: 9 })])).toBe(2);
+  });
+  it("returns -1 when nothing is safe to release", () => {
+    expect(pickReleaseSlot([pm({ cost: 2, isCarry: true }), pm({ cost: 3, ribboned: true })])).toBe(-1);
   });
 });

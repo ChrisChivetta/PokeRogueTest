@@ -8,7 +8,7 @@
 import { getScene } from "./bridge";
 import { CARRY_RANK, type StarterInfo } from "./team";
 import type { CandyStarter } from "./candy";
-import type { CatchContext } from "./catch";
+import type { CatchContext, PartyMon } from "./catch";
 
 /** RibbonData.CLASSIC (src/system/ribbons/ribbon-data.ts) — the bit a Classic clear awards. */
 export const CLASSIC_RIBBON = 0x0008000000n;
@@ -145,4 +145,41 @@ export function readCatchContext(): CatchContext | null {
   }
 
   return { caught: !!gd.dexData[foeRoot]?.caughtAttr, ribboned: ribbonedOf(foeRoot), cost: foeCost, party };
+}
+
+/**
+ * The current party by STARTER (root) species — cost, ribbon, carry flag — indexed by SLOT. Used
+ * by Part B to choose which passenger to release when a full-party catch needs room. Defensive.
+ */
+export function readPartyValue(): PartyMon[] {
+  let scene: any;
+  try {
+    scene = getScene();
+  } catch {
+    return [];
+  }
+  const gd: any = scene?.gameData;
+  if (!gd?.dexData || typeof gd.getSpeciesStarterValue !== "function") return [];
+
+  const out: PartyMon[] = [];
+  for (const p of scene.getPlayerParty?.() ?? []) {
+    let id: number | null = null;
+    try {
+      const r = p?.species?.getRootSpeciesId?.();
+      if (typeof r === "number") id = r;
+    } catch {
+      /* version drift */
+    }
+    if (id == null) continue;
+    let cost: number | null = null;
+    try {
+      const c = gd.getSpeciesStarterValue(id);
+      if (Number.isFinite(c)) cost = c;
+    } catch {
+      /* version drift */
+    }
+    if (cost == null) continue;
+    out.push({ ribboned: (readRibbons(gd.dexData[id]) & CLASSIC_RIBBON) !== 0n, cost, isCarry: id in CARRY_RANK });
+  }
+  return out;
 }

@@ -21,6 +21,15 @@ vi.mock("../src/bridge", async (orig) => {
   };
 });
 
+// Control the party-value reader (Part B release decision) without a live scene.
+const partyVal = vi.hoisted(() => ({ current: [] as any[] }));
+vi.mock("../src/roster", () => ({
+  readPartyValue: () => partyVal.current,
+  readCatchContext: () => null,
+  readRoster: () => [],
+  readCandyStarters: () => [],
+}));
+
 import { resetPolicy, step, pickPartyTarget } from "../src/policy";
 import { resetRetry, noteRetry } from "../src/retry";
 import type { GameSnapshot } from "../src/state";
@@ -344,5 +353,40 @@ describe("shop / money healing", () => {
     };
     await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0, money: 999, playerParty: [p({ hpRatio: 1 })] }));
     expect(rec.presses.at(-1)).toBe("5:reward:take-best"); // straight to the free reward
+  });
+});
+
+describe("full-party catch confirm (Part B)", () => {
+  const pm = (o: any = {}) => ({ ribboned: false, cost: 3, isCarry: false, ...o });
+  beforeEach(() => { partyVal.current = []; });
+
+  it("boxes the catch (picks No) when no passenger is safe to release", async () => {
+    partyVal.current = [pm({ isCarry: true }), pm({ ribboned: true })]; // nothing releasable
+    hRef.current = { config: { options: [0, 0, 0, 0] }, cursor: 0 }; // 4-option fullParty confirm
+    await step(snap({ uiMode: "CONFIRM" }));
+    expect(rec.presses.at(-1)).toBe("1:fullparty:down"); // DOWN toward "No" (index 3)
+  });
+
+  it("swaps: picks Yes, then releases the cheapest passenger on the RELEASE screen", async () => {
+    partyVal.current = [pm({ cost: 9 }), pm({ cost: 2 }), pm({ cost: 5 })]; // cheapest releasable = slot 1
+    hRef.current = { config: { options: [0, 0, 0, 0] }, cursor: 2 }; // cursor already on "Yes" (index 2)
+    await step(snap({ uiMode: "CONFIRM" }));
+    expect(rec.presses.at(-1)).toBe("5:fullparty:swap"); // ACTION on "Yes"
+
+    // Now in PARTY RELEASE: head to the release slot (1).
+    rec.presses = []; hRef.current = { optionsMode: false };
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: [pm(), pm(), pm()] }));
+    expect(rec.presses.at(-1)).toBe("1:party:nav"); // DOWN toward slot 1
+
+    // On the slot, its option menu offers RELEASE (11) → navigate to it.
+    rec.presses = []; hRef.current = { optionsMode: true, options: [6, 11, -1], optionsCursor: 0 };
+    await step(snap({ uiMode: "PARTY", cursor: 1, playerParty: [pm(), pm(), pm()] }));
+    expect(rec.presses.at(-1)).toBe("1:party:opt-down"); // DOWN toward RELEASE at index 1
+  });
+
+  it("a normal 2-option confirm is still declined", async () => {
+    hRef.current = { config: { options: [0, 0] }, cursor: 0 };
+    await step(snap({ uiMode: "CONFIRM" }));
+    expect(rec.presses).toEqual(["6:confirm:decline"]);
   });
 });

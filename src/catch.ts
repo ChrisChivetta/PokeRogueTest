@@ -61,7 +61,8 @@ export function shouldCatch(s: GameSnapshot): boolean {
     // new species → always worth a ball
   } else {
     if (!config.catchUnribboned) return false;
-    if (s.playerParty.length >= 6) return false; // no room to keep it
+    // Need somewhere to keep it: open room, OR Part B will release a passenger to make room.
+    if (!config.swapWhenPartyFull && s.playerParty.length >= 6) return false;
     const ctx = readCatchContext();
     if (!ctx || !worthCatching(ctx)) return false;
   }
@@ -128,4 +129,18 @@ export function worthCatching(ctx: CatchContext): boolean {
   if (!ctx.caught) return true;
   if (ctx.ribboned) return false;
   return ctx.party.some((p) => !p.ribboned && !p.isCarry && p.cost < ctx.cost);
+}
+
+/**
+ * When a catch fills the party, which slot to RELEASE to keep it (Part B)? PURE. The cheapest
+ * un-ribboned, non-carry passenger — those are the easiest to re-ribbon later via the budget team,
+ * so they're the right thing to give up for a pricier catch. -1 if there's nothing safe to release.
+ */
+export function pickReleaseSlot(party: PartyMon[]): number {
+  let slot = -1;
+  let cheapest = Infinity;
+  party.forEach((p, i) => {
+    if (!p.ribboned && !p.isCarry && p.cost < cheapest) { cheapest = p.cost; slot = i; }
+  });
+  return slot;
 }

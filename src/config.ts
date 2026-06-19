@@ -33,6 +33,11 @@ export interface Config {
    */
   catchUnribboned: boolean;
   /**
+   * When the party is full and we catch a valuable un-ribboned mon, release the cheapest
+   * un-ribboned non-carry passenger to keep it (Part B). Off → a full-party catch is just boxed.
+   */
+  swapWhenPartyFull: boolean;
+  /**
    * Spend money in the post-wave shop on heals to survive deeper: revive fainted mons, then top up
    * any live mon below healHpThreshold. We buy the cheapest affordable option.
    */
@@ -71,6 +76,7 @@ export const config: Config = {
   maxWallClockPerRunMs: 60 * 60 * 1000, // 1h per run ceiling
   catchNewSpecies: true,
   catchUnribboned: true,
+  swapWhenPartyFull: true,
   buyHealsWithMoney: true,
   healHpThreshold: 0.5,
   catchAttemptsPerTarget: 3,

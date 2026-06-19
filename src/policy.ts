@@ -19,7 +19,9 @@
 import type { GameSnapshot } from "./state";
 import { Button, getActiveHandler, getMysteryEncounter, inMysteryEncounter } from "./bridge";
 import { press, moveCursor2x2 } from "./input";
-import { shouldCatch, pickBall, noteCatchAttempt, resetCatch } from "./catch";
+import { shouldCatch, pickBall, noteCatchAttempt, resetCatch, pickReleaseSlot } from "./catch";
+import { readPartyValue } from "./roster";
+import { config } from "./config";
 import { bestRewardIndex, type RewardOption } from "./rewards";
 import { rankedMoves } from "./typechart";
 import { retryGeneration } from "./retry";
@@ -35,6 +37,7 @@ export async function step(s: GameSnapshot): Promise<void> {
     case "COMMAND": {
       pendingApply = null; // a new turn began; any reward-apply is finished
       shopBuys = 0; // fresh shop budget next reward screen
+      releasingForSwap = false; releaseSlot = -1;
       const cur = s.cursor ?? 0;
       // Catch a new species when we legally can (the unlock engine) — otherwise fight.
       if (shouldCatch(s)) {
@@ -98,7 +101,14 @@ export async function step(s: GameSnapshot): Promise<void> {
       }
       break;
 
-    case "CONFIRM":
+    case "CONFIRM": {
+      // The post-catch "party is full" prompt is a 4-option confirm [Summary, Pokédex, Yes, No];
+      // handle it specially (Part B) before the generic accept/decline.
+      const ch = getActiveHandler();
+      if (Array.isArray(ch?.config?.options) && ch.config.options.length === 4) {
+        await handleFullPartyConfirm(ch);
+        return;
+      }
       // Accept our own skip confirmation; decline everything else (e.g. learn-a-move).
       if (acceptNextConfirm) {
         acceptNextConfirm = false;
@@ -107,6 +117,7 @@ export async function step(s: GameSnapshot): Promise<void> {
       }
       await press(Button.CANCEL, "confirm:decline");
       return;
+    }
 
     case "SUMMARY":
       // Not part of normal battle flow — back out so a stray summary screen can't
@@ -128,7 +139,9 @@ export async function step(s: GameSnapshot): Promise<void> {
 // list order varies by mode and the default cursor is NOT always the useful action, so
 // we locate the option we want and navigate to it explicitly.
 const PARTY_SEND_OUT = 0; // switch this mon in (faint-switch / switch)
-const PARTY_APPLY = 3; // apply the reward item to this mon
+const PARTY_REVIVE = 2; // apply a Revive to this (fainted) mon — distinct from APPLY
+const PARTY_APPLY = 3; // apply a heal/held item to this mon
+const PARTY_RELEASE = 11; // release this mon (Part B: free a slot for a full-party catch)
 const PARTY_SELECT = 13; // choose this mon for a mystery-encounter option (PartyUiMode.SELECT)
 
 // Set when a reward's target menu offers neither SEND_OUT nor APPLY (a TM / move-
@@ -145,6 +158,9 @@ let pendingApply: ApplyKind = null;
 // Heals bought from the shop this reward screen — bounds the buy loop if an apply ever no-ops.
 let shopBuys = 0;
 const MAX_SHOP_BUYS = 8;
+// Part B: we chose to keep a full-party catch and are releasing a passenger; releaseSlot is which.
+let releasingForSwap = false;
+let releaseSlot = -1;
 
 /**
  * Which party slot to act on, given the intent. PURE so it's unit-testable. A revive targets the
@@ -170,6 +186,8 @@ export function resetPolicy(): void {
   acceptNextConfirm = false;
   pendingApply = null;
   shopBuys = 0;
+  releasingForSwap = false;
+  releaseSlot = -1;
   resetCatch();
 }
 
@@ -280,8 +298,12 @@ async function handleParty(s: GameSnapshot): Promise<void> {
 
   if (h.optionsMode === true && Array.isArray(h.options)) {
     const opts: number[] = h.options;
-    // When applying an item prefer APPLY; when switching prefer SEND_OUT.
-    const prefer = pendingApply ? [PARTY_APPLY, PARTY_SEND_OUT] : [PARTY_SEND_OUT, PARTY_APPLY];
+    // Choose the per-mon action: revive → REVIVE; heal → APPLY; releasing a passenger → RELEASE;
+    // otherwise (a switch) → SEND_OUT. Fall back across the others if the first isn't offered.
+    const prefer = releasingForSwap ? [PARTY_RELEASE]
+      : pendingApply === "revive" ? [PARTY_REVIVE, PARTY_APPLY]
+      : pendingApply === "heal" ? [PARTY_APPLY]
+      : [PARTY_SEND_OUT, PARTY_APPLY];
     let target = -1;
     for (const o of prefer) { const i = opts.indexOf(o); if (i >= 0) { target = i; break; } }
     // Inside an encounter the per-mon menu offers SELECT (PartyUiMode.SELECT) instead —
@@ -306,10 +328,11 @@ async function handleParty(s: GameSnapshot): Promise<void> {
     return;
   }
 
-  // Pick the right target: revive → a FAINTED mon; heal → the MOST-HURT live mon; otherwise
-  // (a switch) → the HEALTHIEST live mon.
-  const intent = pendingApply ?? "switch";
-  const target = pickPartyTarget(s.playerParty, intent);
+  // Pick the target: releasing a passenger (Part B) → that exact slot; revive → a FAINTED mon;
+  // heal → the MOST-HURT live mon; otherwise (a switch) → the HEALTHIEST live mon.
+  const target = releasingForSwap
+    ? releaseSlot
+    : pickPartyTarget(s.playerParty, pendingApply ?? "switch");
 
   if (target < 0) {
     // No valid target (e.g. a revive with nobody fainted) → back out rather than loop on it.
@@ -322,6 +345,21 @@ async function handleParty(s: GameSnapshot): Promise<void> {
   if (cur < target) { await press(Button.DOWN, "party:nav"); return; }
   if (cur > target) { await press(Button.UP, "party:nav"); return; }
   await press(Button.ACTION, "party:open-options");
+}
+
+/**
+ * The "party is full" confirm after a catch — a 4-option vertical menu [0 Summary, 1 Pokédex,
+ * 2 Yes(release-to-swap), 3 No(box it)]. Part B: if there's a passenger worth giving up
+ * (pickReleaseSlot), pick Yes and remember the slot for the RELEASE screen; otherwise box it.
+ */
+async function handleFullPartyConfirm(h: any): Promise<void> {
+  const slot = config.swapWhenPartyFull ? pickReleaseSlot(readPartyValue()) : -1;
+  const target = slot >= 0 ? 2 : 3; // 2 = Yes (swap), 3 = No (box)
+  if (slot >= 0) { releasingForSwap = true; releaseSlot = slot; }
+  const cur = typeof h?.cursor === "number" ? h.cursor : 0;
+  if (cur < target) { await press(Button.DOWN, "fullparty:down"); return; }
+  if (cur > target) { await press(Button.UP, "fullparty:up"); return; }
+  await press(Button.ACTION, slot >= 0 ? "fullparty:swap" : "fullparty:box");
 }
 
 // ── Mystery encounters ───────────────────────────────────────────────────────
