@@ -113,7 +113,7 @@ let inRun = false, run = null, lastSummary = Date.now();
 // holds still for STALL_SECS the bot is wedged in a loop — screenshot it, dump the recent button
 // log, and (by default) pause so the screen settles for inspection. pausedForStall suppresses the
 // safety-halt auto-resume below so our deliberate pause sticks.
-let progressKey = "", progressSince = Date.now(), pausedForStall = false;
+let progressKey = "", progressSince = Date.now(), pausedForStall = false, lastStallKey = "";
 while (Date.now() < DEADLINE) {
   let s;
   try {
@@ -176,7 +176,10 @@ while (Date.now() < DEADLINE) {
   const pkey = `${s.wave}:${s.mode}:${s.phase}`;
   if (pkey !== progressKey) { progressKey = pkey; progressSince = Date.now(); }
   const stalledSecs = Math.round((Date.now() - progressSince) / 1000);
-  if (!pausedForStall && s.enabled && stalledSecs >= STALL_SECS) {
+  // Fire at most once per stall EPISODE (per progress key) — even when not pausing — so a long
+  // stall doesn't spam a screenshot every sample. The key changes when the bot makes progress.
+  if (!pausedForStall && s.enabled && stalledSecs >= STALL_SECS && pkey !== lastStallKey) {
+    lastStallKey = pkey;
     const ts = new Date().toISOString().replace(/[:.]/g, "-");
     const shot = `stall-${ts}.png`;
     try { await page.screenshot({ path: shot }); } catch (e) { emit("stall-shot-failed", { msg: String(e.message).slice(0, 120) }); }
