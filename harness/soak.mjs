@@ -14,8 +14,10 @@
 //         SOAK_LOG (default soak-<ts>.jsonl)  — JSONL event log path
 //         SOAK_ENABLE_RETRIES (default 1)     — turn on the game's retry-on-defeat to exercise retries
 //         SOAK_HUMAN_PACING (default 0)       — 1 = shipped human pacing; 0 = brisk (more coverage)
+//         SOAK_STALL_SECS (default 60)        — flag a stall if wave:mode:phase doesn't change for this long
+//         SOAK_STALL_PAUSE (default 1)        — 1 = stop the bot + screenshot on a stall (for live debugging)
 import { chromium } from "playwright";
-import { readFileSync, appendFileSync } from "node:fs";
+import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
 
 const URL = process.env.SOAK_URL ?? "http://127.0.0.1:8000/";
 const HOURS = Number(process.env.SOAK_HOURS ?? 6);
@@ -25,6 +27,8 @@ const HEADED = process.env.SOAK_HEADED === "1"; // visible window → real GPU (
 const LOG = process.env.SOAK_LOG ?? `soak-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`;
 const ENABLE_RETRIES = (process.env.SOAK_ENABLE_RETRIES ?? "1") === "1";
 const HUMAN_PACING = (process.env.SOAK_HUMAN_PACING ?? "0") === "1";
+const STALL_SECS = Number(process.env.SOAK_STALL_SECS ?? 60);
+const STALL_PAUSE = (process.env.SOAK_STALL_PAUSE ?? "1") === "1";
 const BUNDLE = "dist/pokerogue-auto-ribbon.user.js";
 
 const glArgs =
@@ -55,9 +59,15 @@ function waveHistogram() {
 }
 function median(xs) { if (!xs.length) return 0; const s = [...xs].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; }
 
+// Ring buffer of the bot's own console output (the press() calls log every intended button),
+// so a stall dump shows the exact button sequence the bot was looping on. Survives relaunches.
+const recentLogs = [];
+function pushLog(line) { recentLogs.push(line); if (recentLogs.length > 80) recentLogs.shift(); }
+
 async function bootBot(browser) {
   const page = await browser.newPage();
   page.on("pageerror", (e) => { stats.errors++; emit("pageerror", { msg: String(e.message).slice(0, 200) }); });
+  page.on("console", (m) => pushLog(`${stamp()} ${m.text().slice(0, 160)}`));
   await page.goto(URL, { waitUntil: "domcontentloaded", timeout: 120_000 });
   await page.waitForFunction(() => {
     const pool = globalThis.Phaser?.Display?.Canvas?.CanvasPool?.pool;
@@ -99,6 +109,11 @@ let page = await bootBot(browser);
 emit("start", { url: URL, hours: HOURS, gl: GL, headed: HEADED, log: LOG, enableRetries: ENABLE_RETRIES, humanPacing: HUMAN_PACING });
 
 let inRun = false, run = null, lastSummary = Date.now();
+// Stall watchdog: the "progress key" (wave:mode:phase) should change as the bot plays. If it
+// holds still for STALL_SECS the bot is wedged in a loop — screenshot it, dump the recent button
+// log, and (by default) pause so the screen settles for inspection. pausedForStall suppresses the
+// safety-halt auto-resume below so our deliberate pause sticks.
+let progressKey = "", progressSince = Date.now(), pausedForStall = false;
 while (Date.now() < DEADLINE) {
   let s;
   try {
@@ -149,11 +164,34 @@ while (Date.now() < DEADLINE) {
   // Objective complete → we're done; stop early.
   if (s.done) { emit("objective-complete", { ribboned: s.ribboned }); break; }
 
-  // Safety halt fired (bot disabled itself) → log and resume so the soak keeps going.
-  if (!s.enabled) {
+  // Safety halt fired (bot disabled itself) → log and resume so the soak keeps going. Skip while
+  // we're deliberately paused on a stall (otherwise we'd immediately un-pause the thing to inspect).
+  if (!s.enabled && !pausedForStall) {
     stats.halts++;
     emit("safety-halt-resume", { halts: stats.halts, wave: s.wave });
     await page.evaluate(() => globalThis.autoRibbon.start()).catch(() => {});
+  }
+
+  // ── Stall / loop watchdog ───────────────────────────────────────────────────
+  const pkey = `${s.wave}:${s.mode}:${s.phase}`;
+  if (pkey !== progressKey) { progressKey = pkey; progressSince = Date.now(); }
+  const stalledSecs = Math.round((Date.now() - progressSince) / 1000);
+  if (!pausedForStall && s.enabled && stalledSecs >= STALL_SECS) {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const shot = `stall-${ts}.png`;
+    try { await page.screenshot({ path: shot }); } catch (e) { emit("stall-shot-failed", { msg: String(e.message).slice(0, 120) }); }
+    const tail = recentLogs.slice(-40);
+    try { writeFileSync(`stall-${ts}.txt`, [`stuck on ${pkey} for ${stalledSecs}s`, JSON.stringify(s), "", ...tail].join("\n")); } catch {}
+    emit("stall", { key: pkey, stalledSecs, shot, sample: s, recentLogs: tail });
+    console.log(`\n[soak] !! STALL — stuck on "${pkey}" for ${stalledSecs}s`);
+    console.log(`[soak]    screenshot: ${shot}   details: stall-${ts}.txt`);
+    console.log(`[soak]    last bot actions:`);
+    for (const l of recentLogs.slice(-15)) console.log(`            ${l}`);
+    if (STALL_PAUSE) {
+      pausedForStall = true;
+      await page.evaluate(() => globalThis.autoRibbon.stop()).catch(() => {});
+      console.log(`[soak]    bot PAUSED. Send Claude the screenshot + stall-${ts}.txt, then re-run to resume.\n`);
+    }
   }
 
   emit("sample", s);
