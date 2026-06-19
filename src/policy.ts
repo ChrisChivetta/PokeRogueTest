@@ -23,6 +23,7 @@ import { shouldCatch, pickBall, noteCatchAttempt, resetCatch } from "./catch";
 import { bestRewardIndex, type RewardOption } from "./rewards";
 import { rankedMoves } from "./typechart";
 import { retryGeneration } from "./retry";
+import { applyKind, planShopBuy, type ApplyKind, type ShopHeal } from "./shop";
 
 const onField = (party: GameSnapshot["playerParty"]) => party.find((p) => p.onField) ?? party[0];
 
@@ -33,6 +34,7 @@ export async function step(s: GameSnapshot): Promise<void> {
   switch (s.uiMode) {
     case "COMMAND": {
       pendingApply = null; // a new turn began; any reward-apply is finished
+      shopBuys = 0; // fresh shop budget next reward screen
       const cur = s.cursor ?? 0;
       // Catch a new species when we legally can (the unlock engine) — otherwise fight.
       if (shouldCatch(s)) {
@@ -136,18 +138,13 @@ let skipNextReward = false;
 // Set when CANCEL on MODIFIER_SELECT opens a "skip this reward?" confirm — that one CONFIRM
 // should be accepted (ACTION), unlike learn-move confirms which we decline.
 let acceptNextConfirm = false;
-// What we're currently applying via the PARTY screen, set when we take a heal/revive reward, so
+// What we're currently applying via the PARTY screen, set when we take/buy a heal or revive, so
 // handleParty picks a VALID target: a Revive can ONLY target a fainted mon (selecting a live one
 // loops); a heal should go to the most-hurt mon, not the healthiest (which wastes it).
 let pendingApply: ApplyKind = null;
-type ApplyKind = "revive" | "heal" | null;
-
-// ModifierType.id registry keys (modifier/modifier-type.ts). SACRED_ASH revives the WHOLE party
-// (no target), so it's not here. FULL_HEAL only cures status (any mon) — left to the default.
-const REVIVE_IDS = new Set(["REVIVE", "MAX_REVIVE"]);
-const HEAL_IDS = new Set(["POTION", "SUPER_POTION", "HYPER_POTION", "MAX_POTION", "FULL_RESTORE"]);
-const applyKind = (id: string | null | undefined): ApplyKind =>
-  id && REVIVE_IDS.has(id) ? "revive" : id && HEAL_IDS.has(id) ? "heal" : null;
+// Heals bought from the shop this reward screen — bounds the buy loop if an apply ever no-ops.
+let shopBuys = 0;
+const MAX_SHOP_BUYS = 8;
 
 /**
  * Which party slot to act on, given the intent. PURE so it's unit-testable. A revive targets the
@@ -172,7 +169,26 @@ export function resetPolicy(): void {
   skipNextReward = false;
   acceptNextConfirm = false;
   pendingApply = null;
+  shopBuys = 0;
   resetCatch();
+}
+
+/** Distill the live ModifierSelect SHOP rows into buyable heals (with their grid positions). */
+function readShopHeals(h: any): ShopHeal[] {
+  const rows: any[] = Array.isArray(h?.shopOptionsRows) ? h.shopOptionsRows : [];
+  const out: ShopHeal[] = [];
+  rows.forEach((row: any, ri: number) => {
+    if (!Array.isArray(row)) return;
+    row.forEach((opt: any, ci: number) => {
+      const mto = opt?.modifierTypeOption;
+      const kind = applyKind(typeof mto?.type?.id === "string" ? mto.type.id : null);
+      const cost = Number(mto?.cost);
+      if (!kind || !Number.isFinite(cost) || cost <= 0) return;
+      // shopOptionsRows is bottom-anchored: rowCursor = options(2..len+1) = at(-(rowCursor-1)).
+      out.push({ kind, cost, rowCursor: rows.length - ri + 1, cursorIndex: ci });
+    });
+  });
+  return out;
 }
 
 /** Distill the live ModifierSelect handler's offered reward row into scoreable options. */
@@ -206,6 +222,24 @@ async function handleReward(s: GameSnapshot): Promise<void> {
   }
 
   const h = getActiveHandler();
+
+  // Spend money on heals FIRST (survive deeper): revive fainted mons, then top up hurt ones.
+  // Buying a heal opens the PARTY target screen, handled like a free-reward apply (pendingApply).
+  if (shopBuys < MAX_SHOP_BUYS) {
+    const buy = planShopBuy(s.playerParty, s.money ?? 0, readShopHeals(h));
+    if (buy) {
+      const row = typeof h?.rowCursor === "number" ? h.rowCursor : 1;
+      if (row !== buy.rowCursor) { await press(row < buy.rowCursor ? Button.UP : Button.DOWN, "shop:to-row"); return; }
+      const cur = s.cursor ?? 0;
+      if (cur < buy.cursorIndex) { await press(Button.RIGHT, "shop:nav-right"); return; }
+      if (cur > buy.cursorIndex) { await press(Button.LEFT, "shop:nav-left"); return; }
+      shopBuys++;
+      pendingApply = buy.kind; // the bought heal opens PARTY → target it (revive→fainted, heal→hurt)
+      await press(Button.ACTION, `shop:buy-${buy.kind}`);
+      return;
+    }
+  }
+
   const opts = readRewardOptions(h);
   const best = bestRewardIndex(opts);
 

@@ -32,6 +32,14 @@ export interface Config {
    * the party has room to keep them. See catch.ts/worthCatching.
    */
   catchUnribboned: boolean;
+  /**
+   * Spend money in the post-wave shop on heals to survive deeper: revive fainted mons, then top up
+   * any live mon below healHpThreshold. We buy the cheapest affordable option.
+   */
+  buyHealsWithMoney: boolean;
+  /** A live mon below this HP fraction is "hurt" enough to spend a bought potion on. */
+  healHpThreshold: number;
+
   /** Max ball throws at one catch target before giving up and KO-ing it. */
   catchAttemptsPerTarget: number;
 
@@ -63,6 +71,8 @@ export const config: Config = {
   maxWallClockPerRunMs: 60 * 60 * 1000, // 1h per run ceiling
   catchNewSpecies: true,
   catchUnribboned: true,
+  buyHealsWithMoney: true,
+  healHpThreshold: 0.5,
   catchAttemptsPerTarget: 3,
   applyCandyReductions: false, // experimental — see note above
   maxRetriesPerWave: 3,

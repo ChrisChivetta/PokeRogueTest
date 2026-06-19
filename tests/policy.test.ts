@@ -309,3 +309,40 @@ describe("reward apply targeting (the revive-loop fix)", () => {
     expect(rec.presses).toEqual(["1:party:nav"]); // slot 1 is healthiest
   });
 });
+
+describe("shop / money healing", () => {
+  it("navigates to the shop, buys a revive, then aims PARTY at the fainted mon", async () => {
+    const party = [p({ fainted: true, hpRatio: 0 })];
+    const h: any = {
+      rowCursor: 1,
+      options: [{ modifierTypeOption: { type: { id: "LEFTOVERS", tier: 2 } } }],
+      shopOptionsRows: [[{ modifierTypeOption: { cost: 300, type: { id: "REVIVE" } } }]],
+    };
+    hRef.current = h;
+    const mod = () => snap({ uiMode: "MODIFIER_SELECT", cursor: 0, money: 999, playerParty: party });
+
+    // On the rewards row (1); the revive sits at rowCursor 2 → press UP toward it.
+    await step(mod());
+    expect(rec.presses.at(-1)).toBe("0:shop:to-row"); // UP=0
+
+    // Now on the shop row, cursor already on the item → buy it.
+    rec.presses = []; h.rowCursor = 2;
+    await step(mod());
+    expect(rec.presses.at(-1)).toBe("5:shop:buy-revive"); // ACTION=5
+
+    // The buy opened PARTY; with a revive pending it heads to the fainted mon (slot 0 → ACTION).
+    rec.presses = []; hRef.current = { optionsMode: false };
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: party }));
+    expect(rec.presses.at(-1)).toBe("5:party:open-options");
+  });
+
+  it("skips the shop and takes the free reward when the party is healthy", async () => {
+    hRef.current = {
+      rowCursor: 1,
+      options: [{ modifierTypeOption: { type: { id: "LEFTOVERS", tier: 2 } } }],
+      shopOptionsRows: [[{ modifierTypeOption: { cost: 300, type: { id: "REVIVE" } } }]],
+    };
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0, money: 999, playerParty: [p({ hpRatio: 1 })] }));
+    expect(rec.presses.at(-1)).toBe("5:reward:take-best"); // straight to the free reward
+  });
+});
