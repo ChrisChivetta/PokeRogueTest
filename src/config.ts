@@ -45,6 +45,13 @@ export interface Config {
   /** A live mon below this HP fraction is "hurt" enough to spend a bought potion on. */
   healHpThreshold: number;
 
+  /**
+   * On startup, set the game's options for fast unattended play (battle style "Set", retries on,
+   * animations + tutorials off, max speed) via the game's own saveSetting API. Changes the
+   * account's saved preferences (not run/dex state).
+   */
+  applyGameSettings: boolean;
+
   /** Max ball throws at one catch target before giving up and KO-ing it. */
   catchAttemptsPerTarget: number;
 
@@ -79,6 +86,7 @@ export const config: Config = {
   swapWhenPartyFull: true,
   buyHealsWithMoney: true,
   healHpThreshold: 0.5,
+  applyGameSettings: true,
   catchAttemptsPerTarget: 3,
   applyCandyReductions: false, // experimental — see note above
   maxRetriesPerWave: 3,

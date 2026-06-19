@@ -27,6 +27,7 @@ import { planRun, summarizeProgress } from "./orchestrator";
 import { readRoster } from "./roster";
 import { checkRunSafety, resetSafety } from "./safety";
 import { shouldRetry, noteRetry, retryGeneration, resetRetry, noteWave, retriesTaken } from "./retry";
+import { applyGameSettings } from "./settings";
 
 let looping = false;
 let lastSummary = "";
@@ -136,6 +137,7 @@ async function driveLoop(): Promise<void> {
   while (config.enabled) {
     try {
       const snap = readState();
+      if (snap.ready) applyGameSettings(); // once: Set battle style, retries on, fast, no tutorials
 
       const summary = summarize(snap);
       if (summary !== lastSummary) {
