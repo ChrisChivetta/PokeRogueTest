@@ -78,13 +78,24 @@ describe("policy routing", () => {
     expect(rec.presses).toEqual(["nav:2->0", "5:command:fight"]);
   });
 
-  it("COMMAND opens the BALL menu when a new species is catchable", async () => {
-    const wildFoe = p({ onField: true, speciesId: 25, speciesCaught: false, isBoss: false, bossSegmentIndex: null });
+  it("COMMAND opens the BALL menu when a low-HP new species is catchable", async () => {
+    // Low HP (≤ catchHpThreshold) → past the soften gate, throw straight away.
+    const wildFoe = p({ onField: true, speciesId: 25, speciesCaught: false, isBoss: false, bossSegmentIndex: null, hpRatio: 0.2 });
     await step(snap({
       uiMode: "COMMAND", cursor: 0, enemyParty: [wildFoe], pokeballCounts: [5, 0, 0, 0, 0],
       battle: { waveIndex: 5, isTrainer: false } as any,
     }));
     expect(rec.presses).toEqual(["nav:0->1", "5:command:ball"]); // 1 = BALL
+  });
+
+  it("COMMAND softens (FIGHTs) a full-HP catch target before throwing", async () => {
+    // Full HP (> catchHpThreshold) on a catchable wild → attack to lower HP first, don't throw yet.
+    const wildFoe = p({ onField: true, speciesId: 25, speciesCaught: false, isBoss: false, bossSegmentIndex: null, hpRatio: 1 });
+    await step(snap({
+      uiMode: "COMMAND", cursor: 1, enemyParty: [wildFoe], pokeballCounts: [5, 0, 0, 0, 0],
+      battle: { waveIndex: 5, isTrainer: false } as any,
+    }));
+    expect(rec.presses).toEqual(["nav:1->0", "5:command:fight-soften"]); // 0 = FIGHT (soften)
   });
 
   it("BALL walks to the chosen tier and throws", async () => {
@@ -130,7 +141,7 @@ describe("policy routing", () => {
   });
 
   it("MODIFIER_SELECT navigates to the highest-priority reward and takes it", async () => {
-    hRef.current = rewardHandler(["POTION", "REVIVER_SEED", "TM_COMMON"]); // best = index 1
+    hRef.current = rewardHandler(["MULTI_LENS", "REVIVER_SEED", "TM_COMMON"]); // best = index 1
     await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0 }));
     expect(rec.presses).toEqual(["3:reward:nav-right"]); // RIGHT toward column 1
     rec.presses = [];

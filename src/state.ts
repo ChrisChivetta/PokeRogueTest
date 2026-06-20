@@ -200,6 +200,23 @@ function readPokemon(p: any, onField: boolean, speciesCaught: boolean | null = n
   };
 }
 
+/**
+ * Normalize the game's `pokeballCounts` into a dense number[] indexed by PokeballType
+ * (POKE=0, GREAT=1, ULTRA=2, ROGUE=3, MASTER=4). The game stores it as a `Record<PokeballType,
+ * number>` — a plain object keyed by the numeric enum value ({0:5,1:0,…}) — so a naive
+ * `Array.isArray` check misses it and the bot thinks it has no balls. Accept the object form
+ * (the real shape), an actual array (defensive), and null (pre-init). Exported for unit tests.
+ */
+export function readPokeballCounts(raw: unknown): number[] | null {
+  if (raw == null || typeof raw !== "object") return null;
+  // Both arrays and the keyed object are read positionally 0..4; arrays already index that way,
+  // and the object's numeric keys ("0".."4") are read via bracket access.
+  const src = raw as Record<string | number, unknown>;
+  const out: number[] = [];
+  for (let i = 0; i <= 4; i++) out[i] = num(src[i]) ?? 0;
+  return out;
+}
+
 function readParty(scene: RawScene, side: "player" | "enemy"): PokemonSnapshot[] {
   const party: any[] =
     side === "player"
@@ -261,9 +278,11 @@ export function readState(): GameSnapshot {
   }
 
   const handler = tryCall<any>(scene?.ui, "getHandler");
-  const pokeballCounts = Array.isArray(scene?.pokeballCounts)
-    ? scene.pokeballCounts.map((n: unknown) => num(n) ?? 0)
-    : null;
+  // pokeballCounts is a `Record<PokeballType, number>` at runtime — a PLAIN OBJECT keyed by the
+  // enum index ({0:5,1:0,2:0,3:0,4:0}), NOT an array. The old `Array.isArray` read returned null,
+  // so the bot believed it had zero balls and never threw one ("no balls in stock"). Normalize
+  // either shape into a dense number[] indexed POKE(0)…MASTER(4) for catch.ts to scan.
+  const pokeballCounts = readPokeballCounts(scene?.pokeballCounts);
 
   return {
     ready: true,

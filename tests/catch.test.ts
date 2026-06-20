@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { shouldCatch, pickBall, noteCatchAttempt, resetCatch, PokeballType, worthCatching, pickReleaseSlot } from "../src/catch";
+import { shouldCatch, shouldSoftenBeforeCatch, noteSoftenTurn, pickBall, noteCatchAttempt, resetCatch, PokeballType, worthCatching, pickReleaseSlot } from "../src/catch";
 import type { CatchContext } from "../src/catch";
 import { config } from "../src/config";
 import type { GameSnapshot } from "../src/state";
@@ -18,7 +18,14 @@ const s = (o: any = {}): GameSnapshot => ({
   ...o,
 } as GameSnapshot);
 
-beforeEach(() => { resetCatch(); config.catchNewSpecies = true; config.catchAttemptsPerTarget = 3; });
+beforeEach(() => {
+  resetCatch();
+  config.catchNewSpecies = true;
+  config.catchAttemptsPerTarget = 3;
+  config.softenBeforeCatch = true;
+  config.catchHpThreshold = 0.35;
+  config.catchSoftenTurns = 2;
+});
 
 describe("catch — when to throw", () => {
   it("throws at a NEW wild species", () => {
@@ -94,6 +101,47 @@ describe("catch — ball selection", () => {
 
   it("returns null with an empty bag", () => {
     expect(pickBall(s({ pokeballCounts: [0, 0, 0, 0, 0] }))).toBeNull();
+  });
+});
+
+describe("shouldSoftenBeforeCatch — lower HP before throwing", () => {
+  it("softens a full-HP catch target instead of throwing immediately", () => {
+    expect(shouldSoftenBeforeCatch(s({ enemyParty: [foe({ hpRatio: 1 })] }))).toBe(true);
+  });
+
+  it("throws straight away once the target is at/below the HP threshold", () => {
+    expect(shouldSoftenBeforeCatch(s({ enemyParty: [foe({ hpRatio: 0.3 })] }))).toBe(false);
+    expect(shouldSoftenBeforeCatch(s({ enemyParty: [foe({ hpRatio: 0.35 })] }))).toBe(false);
+  });
+
+  it("stops softening (throws) after the soften-turns cap, even at full HP", () => {
+    const snap = s({ enemyParty: [foe({ hpRatio: 1 })] });
+    expect(shouldSoftenBeforeCatch(snap)).toBe(true); noteSoftenTurn();
+    expect(shouldSoftenBeforeCatch(snap)).toBe(true); noteSoftenTurn();
+    expect(shouldSoftenBeforeCatch(snap)).toBe(false); // 2 softens spent → throw now
+  });
+
+  it("never softens a boss (just throws on its catchable segment)", () => {
+    expect(shouldSoftenBeforeCatch(s({ enemyParty: [foe({ isBoss: true, bossSegmentIndex: 0, hpRatio: 1 })] }))).toBe(false);
+  });
+
+  it("doesn't risk an extra turn when HP is unreadable", () => {
+    expect(shouldSoftenBeforeCatch(s({ enemyParty: [foe({ hpRatio: null })] }))).toBe(false);
+  });
+
+  it("can be disabled by config", () => {
+    config.softenBeforeCatch = false;
+    expect(shouldSoftenBeforeCatch(s({ enemyParty: [foe({ hpRatio: 1 })] }))).toBe(false);
+  });
+
+  it("resets the soften budget when the target changes", () => {
+    const snap = s({ enemyParty: [foe({ hpRatio: 1 })] });
+    noteSoftenTurn(); noteSoftenTurn();
+    expect(shouldSoftenBeforeCatch(snap)).toBe(false); // budget spent on this target
+    // A new foe on a new wave → shouldCatch re-keys and clears the soften count.
+    const next = s({ battle: { waveIndex: 6, isTrainer: false }, enemyParty: [foe({ speciesId: 4, hpRatio: 1 })] });
+    expect(shouldCatch(next)).toBe(true); // re-keys the target (resets attempts + softenTurns)
+    expect(shouldSoftenBeforeCatch(next)).toBe(true);
   });
 });
 

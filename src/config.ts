@@ -56,6 +56,18 @@ export interface Config {
   catchAttemptsPerTarget: number;
 
   /**
+   * Soften (attack) a catchable wild to lower its HP before throwing — a lower-HP target has a far
+   * higher catch rate. We FIGHT while the foe is above catchHpThreshold, up to catchSoftenTurns
+   * times, then throw regardless. Bounded + capped because the carry usually out-levels wilds and a
+   * single hit can KO the target (wasting the catch); these knobs keep softening to a light tap.
+   */
+  softenBeforeCatch: boolean;
+  /** Throw once the catch target is at/below this HP fraction (above it we soften first). */
+  catchHpThreshold: number;
+  /** Max soften (attack) turns spent on one catch target before we throw no matter the HP. */
+  catchSoftenTurns: number;
+
+  /**
    * Spend candy to reduce starter costs during select (the planCandy decisions). EXPERIMENTAL:
    * the decision logic is tested, but reliably driving the "Use Candies" sub-menus on the live
    * grid still needs work, so it's off by default. The loop runs fine without it.
@@ -88,6 +100,9 @@ export const config: Config = {
   healHpThreshold: 0.5,
   applyGameSettings: true,
   catchAttemptsPerTarget: 3,
+  softenBeforeCatch: true,
+  catchHpThreshold: 0.35, // throw at ≤35% HP; above that, soften first
+  catchSoftenTurns: 2, // …but never spend more than 2 attacks softening (KO risk)
   applyCandyReductions: false, // experimental — see note above
   maxRetriesPerWave: 3,
 };

@@ -21,7 +21,7 @@ import { Button, getActiveHandler, getMysteryEncounter, inMysteryEncounter, getL
 import { press, moveCursor2x2 } from "./input";
 import { evaluateLearnMove } from "./learnmove";
 import { log } from "./log";
-import { shouldCatch, pickBall, noteCatchAttempt, resetCatch, pickReleaseSlot } from "./catch";
+import { shouldCatch, shouldSoftenBeforeCatch, noteSoftenTurn, pickBall, noteCatchAttempt, resetCatch, pickReleaseSlot } from "./catch";
 import { readPartyValue } from "./roster";
 import { config } from "./config";
 import { bestRewardIndex, type RewardOption } from "./rewards";
@@ -52,8 +52,17 @@ export async function step(s: GameSnapshot): Promise<void> {
       // Wait for the handler to initialize (cursor becomes non-null).
       if (s.cursor == null) return;
       const cur = s.cursor;
-      // Catch a new species when we legally can (the unlock engine) — otherwise fight.
+      // Catch a new species when we legally can (the unlock engine) — otherwise fight. But first
+      // SOFTEN a healthy catch target: a lower-HP wild catches far more reliably, so we attack it a
+      // couple of times (FIGHT) before throwing. shouldSoftenBeforeCatch caps this so we never chip
+      // it to a KO and waste the catch.
       if (shouldCatch(s)) {
+        if (shouldSoftenBeforeCatch(s)) {
+          noteSoftenTurn();
+          if (cur !== 0) await moveCursor2x2(cur, 0); // 0 = FIGHT (soften the catch target)
+          await press(Button.ACTION, "command:fight-soften");
+          return;
+        }
         if (cur !== 1) await moveCursor2x2(cur, 1); // 1 = BALL (top-right)
         await press(Button.ACTION, "command:ball");
         return;

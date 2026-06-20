@@ -24,6 +24,9 @@ const END_BIOME_FIRST_WAVE = 191;
 // Per-target throw budget. Keyed so it resets when the foe (or wave) changes.
 let attempts = 0;
 let targetKey = "";
+// Per-target soften (pre-catch attack) budget — how many times we've FOUGHT a catchable wild to
+// lower its HP before throwing. Reset alongside `attempts` when the target changes.
+let softenTurns = 0;
 // Cumulative diagnostics (NOT reset per run) so telemetry can answer "is it actually catching?":
 // total balls released this session + the reason the last shouldCatch() call decided as it did.
 let ballsThrown = 0;
@@ -42,6 +45,7 @@ export function lastCatchDecision(): string {
 export function resetCatch(): void {
   attempts = 0;
   targetKey = "";
+  softenTurns = 0;
 }
 
 const onFieldFoes = (s: GameSnapshot): PokemonSnapshot[] => s.enemyParty.filter((p) => p.onField);
@@ -89,6 +93,7 @@ export function shouldCatch(s: GameSnapshot): boolean {
   if (key !== targetKey) {
     targetKey = key;
     attempts = 0;
+    softenTurns = 0;
   }
   if (attempts >= config.catchAttemptsPerTarget) return no(`hit attempt cap (${attempts})`);
   lastDecision = `yes: ${foe.name} (${foe.speciesCaught === false ? "new species" : "un-ribboned"}), attempt ${attempts + 1}`;
@@ -116,6 +121,29 @@ export function pickBall(s: GameSnapshot): number | null {
 export function noteCatchAttempt(): void {
   attempts++;
   ballsThrown++;
+}
+
+/**
+ * Given we've already decided to catch the active foe (shouldCatch === true), should we SOFTEN it
+ * (attack to lower HP) this turn instead of throwing? PURE w.r.t. inputs but reads the per-target
+ * soften counter. A lower-HP target catches far more reliably, so we FIGHT while the foe is above
+ * catchHpThreshold — but only up to catchSoftenTurns times, because the carry usually out-levels
+ * wilds and another hit can KO (and waste) the catch. Once we hit the cap, or the foe is already
+ * low, or it's a boss (segment HP behaves differently — just throw on its last shield), we throw.
+ */
+export function shouldSoftenBeforeCatch(s: GameSnapshot): boolean {
+  if (!config.softenBeforeCatch) return false;
+  const foe = onFieldFoes(s)[0];
+  if (!foe || foe.isBoss) return false; // bosses: don't chip segments, just throw on last shield
+  if (softenTurns >= config.catchSoftenTurns) return false; // spent our soften budget → throw now
+  const hp = foe.hpRatio;
+  if (hp == null) return false; // unreadable HP → don't risk an extra turn, just throw
+  return hp > config.catchHpThreshold; // still healthy → soften first
+}
+
+/** Record a soften (pre-catch attack) turn against the current target. */
+export function noteSoftenTurn(): void {
+  softenTurns++;
 }
 
 // ── Catch-for-ribbons value ──────────────────────────────────────────────────

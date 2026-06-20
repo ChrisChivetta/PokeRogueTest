@@ -9,6 +9,8 @@ export const resetCatch = (...a: Parameters<typeof import("../catch").resetCatch
 export const shouldCatch = (...a: Parameters<typeof import("../catch").shouldCatch>) => h().shouldCatch(...a);
 export const pickBall = (...a: Parameters<typeof import("../catch").pickBall>) => h().pickBall(...a);
 export const noteCatchAttempt = (...a: Parameters<typeof import("../catch").noteCatchAttempt>) => h().noteCatchAttempt(...a);
+export const shouldSoftenBeforeCatch = (...a: Parameters<typeof import("../catch").shouldSoftenBeforeCatch>) => h().shouldSoftenBeforeCatch(...a);
+export const noteSoftenTurn = (...a: Parameters<typeof import("../catch").noteSoftenTurn>) => h().noteSoftenTurn(...a);
 export const worthCatching = (...a: Parameters<typeof import("../catch").worthCatching>) => h().worthCatching(...a);
 export const pickReleaseSlot = (...a: Parameters<typeof import("../catch").pickReleaseSlot>) => h().pickReleaseSlot(...a);
 
