@@ -38,7 +38,9 @@ export async function step(s: GameSnapshot): Promise<void> {
       pendingApply = null; // a new turn began; any reward-apply is finished
       shopBuys = 0; // fresh shop budget next reward screen
       releasingForSwap = false; releaseSlot = -1;
-      const cur = s.cursor ?? 0;
+      // Wait for the handler to initialize (cursor becomes non-null).
+      if (s.cursor == null) return;
+      const cur = s.cursor;
       // Catch a new species when we legally can (the unlock engine) — otherwise fight.
       if (shouldCatch(s)) {
         if (cur !== 1) await moveCursor2x2(cur, 1); // 1 = BALL (top-right)
@@ -63,13 +65,15 @@ export async function step(s: GameSnapshot): Promise<void> {
     }
 
     case "FIGHT": {
+      // Wait for the handler to initialize (cursor becomes non-null).
+      if (s.cursor == null) return;
       const lead = onField(s.playerParty);
       // Pick the best move — but on a retry, vary it: the Nth-best move on the Nth retry, so we
       // don't replay the exact line that just lost. Out of PP on everything → first slot (Struggle).
       const ranked = rankedMoves(lead, onField(s.enemyParty));
       const gen = retryGeneration();
       const idx = ranked.length ? ranked[gen % ranked.length] : (lead?.moves[0]?.index ?? 0);
-      const cur = s.cursor ?? 0;
+      const cur = s.cursor;
       if (cur !== idx) await moveCursor2x2(cur, idx);
       await press(Button.ACTION, `fight:move${idx}`);
       return;
