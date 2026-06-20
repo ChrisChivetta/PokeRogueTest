@@ -17,9 +17,10 @@ import { log } from "./log";
 import { isSceneReady, sceneProbe, modeProbe, type SceneProbe, type ModeProbe } from "./bridge";
 import { readState, summarize, type GameSnapshot } from "./state";
 import { mountHud, updateHud } from "./hud";
-import { sleep, actionsSentCount, press } from "./input";
+import { sleep, actionsSentCount, press, recentPresses } from "./input";
 import { Button, type ButtonName } from "./bridge";
-import { step as policyStep } from "./policy";
+import { getPolicy, applyPolicyModule, policyVersion } from "./policy-registry";
+import { publishHostSeam } from "./host-seam";
 import { decideLoopAction, isServerTrouble } from "./runloop";
 import { driveStartRun, driveStarterSelect, resetStarterSelect } from "./execution";
 import { getCurrentPhaseName } from "./bridge";
@@ -108,7 +109,9 @@ async function tick(snap: GameSnapshot): Promise<void> {
   const action = decideLoopAction({ uiMode: snap.uiMode, enabled: config.enabled, inRun, objectiveDone });
   switch (action) {
     case "PLAY":
-      await policyStep(snap);
+      // Route through the hot-swappable registry, not a static import: a live policy patch
+      // (autoRibbon.reloadPolicy) takes effect on the very next tick, resuming in place.
+      await getPolicy()(snap);
       return;
     case "START_RUN":
       await driveStartRun(snap);
@@ -196,6 +199,12 @@ const api = {
     return {
       ready: s.ready,
       uiMode: s.uiMode,
+      // Engine-side facts the harness needs to detect loops and that I "see" the screen from:
+      phase: getCurrentPhaseName(),
+      cursor: s.cursor ?? null,
+      awaitingActionInput: s.awaitingActionInput ?? null,
+      policyVersion: policyVersion(),
+      recentPresses: recentPresses().slice(-12),
       wave: s.battle?.waveIndex ?? null,
       isBossWave: s.battle?.isBossWave ?? false,
       partySize: party.length,
@@ -236,9 +245,34 @@ const api = {
   tap(name: ButtonName): Promise<boolean> {
     return press(Button[name], `diag:${name}`);
   },
+
+  /**
+   * Hot-swap the decision policy WITHOUT reloading the page. `src` is a freshly-built policy
+   * bundle (dist/policy.hot.js) that sets globalThis.__policyModule = { step }. The Phaser scene
+   * keeps running, so the next tick resumes from the current wave/phase with the new logic. A bad
+   * patch is rejected and the previous policy keeps driving — see policy-registry.applyPolicyModule.
+   */
+  reloadPolicy(src: string): { ok: boolean; version: number; error?: string } {
+    const res = applyPolicyModule(src);
+    if (res.ok && !config.enabled) {
+      // If we'd paused on the stall, come back to life with the patched policy.
+      config.enabled = true;
+      void driveLoop();
+    }
+    return res;
+  },
+  /** Current policy version (0 = the built-in policy that shipped in the bundle). */
+  policyVersion(): number {
+    return policyVersion();
+  },
 };
 
 (window as any).autoRibbon = api;
+
+// Expose the live seam singletons so a hot-swapped policy bundle shares this bundle's exact
+// config/input/bridge/catch/retry/roster (see host-seam.ts + seam-shims/). Must run before any
+// reloadPolicy call.
+publishHostSeam();
 
 mountHud();
 void driveLoop();

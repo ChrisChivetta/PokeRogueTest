@@ -17,6 +17,20 @@ export function actionsSentCount(): number {
   return actionsSent;
 }
 
+// Ring buffer of the most recent intended presses ("BUTTON (why)"), so live telemetry can show
+// the exact sequence the bot is looping on — structured, no console scraping. Records under dryRun
+// too (the intent is what matters for diagnosing a loop).
+const TRACE_MAX = 40;
+const pressTrace: string[] = [];
+function recordTrace(label: string): void {
+  pressTrace.push(label);
+  if (pressTrace.length > TRACE_MAX) pressTrace.shift();
+}
+/** The last up-to-40 intended presses, oldest first. */
+export function recentPresses(): string[] {
+  return pressTrace.slice();
+}
+
 export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -35,6 +49,7 @@ function pacingDelay(): number {
 export async function press(button: number, why = ""): Promise<boolean> {
   if (!config.enabled) return false;
   const label = `${NAME[button] ?? button}${why ? ` (${why})` : ""}`;
+  recordTrace(label);
 
   if (config.dryRun) {
     log.info(`[dryRun] would press ${label}`);

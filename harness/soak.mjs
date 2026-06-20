@@ -17,7 +17,7 @@
 //         SOAK_STALL_SECS (default 120)       — flag a stall if wave:mode:phase doesn't change for this long
 //         SOAK_STALL_PAUSE (default 1)        — 1 = stop the bot + screenshot on a stall (for live debugging)
 import { chromium } from "playwright";
-import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
+import { readFileSync, appendFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 
 const URL = process.env.SOAK_URL ?? "http://127.0.0.1:8000/";
 const HOURS = Number(process.env.SOAK_HOURS ?? 6);
@@ -30,6 +30,12 @@ const HUMAN_PACING = (process.env.SOAK_HUMAN_PACING ?? "0") === "1";
 const STALL_SECS = Number(process.env.SOAK_STALL_SECS ?? 120);
 const STALL_PAUSE = (process.env.SOAK_STALL_PAUSE ?? "1") === "1";
 const BUNDLE = "dist/pokerogue-auto-ribbon.user.js";
+const HOT_BUNDLE = "dist/policy.hot.js";
+// Autonomous hot-reload: when on, the harness watches for a sentinel file that the agent drops
+// after building a fixed dist/policy.hot.js, then live-swaps the policy into the RUNNING page and
+// resumes from the stalled wave/phase — no browser restart, no run lost. See harness/auto-iterate.mjs.
+const HOT_RELOAD = (process.env.SOAK_HOT_RELOAD ?? "0") === "1";
+const RELOAD_SIGNAL = process.env.SOAK_RELOAD_SIGNAL ?? "policy-reload.signal";
 
 const glArgs =
   GL === "auto" ? [] // force nothing → Chrome uses the platform's real GPU (use this on a Mac)
@@ -104,6 +110,29 @@ async function sample(page) {
   });
 }
 
+/**
+ * Live-swap the policy into the RUNNING page from dist/policy.hot.js, then resume. The Phaser scene
+ * is untouched, so play continues from the current wave/phase with the patched decision logic.
+ * Returns the in-page reload result {ok, version, error}. A rejected (bad) patch leaves the prior
+ * policy driving — the soak never breaks on a typo'd hot fix.
+ */
+async function reloadPolicyFromDisk(page) {
+  let src;
+  try {
+    src = readFileSync(HOT_BUNDLE, "utf8");
+  } catch (e) {
+    return { ok: false, error: `cannot read ${HOT_BUNDLE}: ${e.message}` };
+  }
+  try {
+    const res = await page.evaluate((s) => globalThis.autoRibbon.reloadPolicy(s), src);
+    // reloadPolicy auto-resumes if we were paused; make sure the bot is enabled regardless.
+    await page.evaluate(() => globalThis.autoRibbon.start()).catch(() => {});
+    return res;
+  } catch (e) {
+    return { ok: false, error: String(e.message).slice(0, 200) };
+  }
+}
+
 let browser = await chromium.launch(launchOpts);
 let page = await bootBot(browser);
 emit("start", { url: URL, hours: HOURS, gl: GL, headed: HEADED, log: LOG, enableRetries: ENABLE_RETRIES, humanPacing: HUMAN_PACING });
@@ -128,6 +157,22 @@ while (Date.now() < DEADLINE) {
       page = await bootBot(browser);
     } catch (e2) { emit("relaunch-failed", { msg: String(e2.message).slice(0, 160) }); await new Promise((r) => setTimeout(r, 30_000)); }
     continue;
+  }
+
+  // ── Live policy hot-reload ──────────────────────────────────────────────────
+  // The agent fixes src/policy.ts, rebuilds dist/policy.hot.js, then drops RELOAD_SIGNAL. We swap
+  // the new policy into the running page and resume from the stalled wave/phase — no run lost.
+  if (HOT_RELOAD && existsSync(RELOAD_SIGNAL)) {
+    try { rmSync(RELOAD_SIGNAL); } catch {}
+    const res = await reloadPolicyFromDisk(page);
+    emit("policy-reload", res);
+    if (res.ok) {
+      // Clear stall bookkeeping so the watchdog gives the patched policy a fresh window to progress.
+      pausedForStall = false; lastStallKey = ""; progressKey = ""; progressSince = Date.now();
+      console.log(`[soak] policy hot-swapped → v${res.version}; resumed in place.`);
+    } else {
+      console.log(`[soak] policy reload REJECTED: ${res.error}`);
+    }
   }
 
   if (stats.ribbonsBaseline == null) { stats.ribbonsBaseline = s.ribboned; emit("baseline", { ribboned: s.ribboned, owned: s.owned }); }
@@ -193,7 +238,11 @@ while (Date.now() < DEADLINE) {
     if (STALL_PAUSE) {
       pausedForStall = true;
       await page.evaluate(() => globalThis.autoRibbon.stop()).catch(() => {});
-      console.log(`[soak]    bot PAUSED. Send Claude the screenshot + stall-${ts}.txt, then re-run to resume.\n`);
+      if (HOT_RELOAD) {
+        console.log(`[soak]    bot PAUSED. Fix src/policy.ts, build the hot bundle, drop "${RELOAD_SIGNAL}" → live-swap + resume in place.\n`);
+      } else {
+        console.log(`[soak]    bot PAUSED. Send Claude the screenshot + stall-${ts}.txt, then re-run to resume.\n`);
+      }
     }
   }
 

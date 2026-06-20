@@ -5,3 +5,6 @@ dist/
 
 # Harness test artifacts (screenshots, probe JSON)
 harness/out/
+
+# Hot-reload sentinel dropped by harness/hot-apply.mjs (transient signal to a live soak)
+policy-reload.signal

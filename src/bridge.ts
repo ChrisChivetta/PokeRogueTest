@@ -338,6 +338,85 @@ export function getCurrentPhaseName(): string | null {
   return (typeof p?.phaseName === "string" ? p.phaseName : p?.constructor?.name) ?? null;
 }
 
+/** One move's quality-relevant fields (the candidate, or an existing slot). */
+export interface LearnMoveData {
+  name: string;
+  /** Lowercased type string (e.g. "fire"); null if unreadable. */
+  type: string | null;
+  power: number | null;
+  accuracy: number | null;
+}
+
+/** What a LearnMovePhase is offering, plus the learner's current moveset + types. */
+export interface LearnMoveCandidate {
+  candidate: LearnMoveData;
+  /** The learning Pokémon's existing moves (0–4), in slot order. */
+  currentMoves: LearnMoveData[];
+  /** The learning Pokémon's types (lowercased) — for STAB scoring. */
+  userTypes: string[];
+}
+
+/** Resolve a raw move object (static data or PokemonMove wrapper) to LearnMoveData. */
+function readMoveData(raw: any): LearnMoveData {
+  const md = (typeof raw?.getMove === "function" ? raw.getMove() : raw?.move) ?? raw;
+  const power = typeof md?.power === "number" ? md.power : null;
+  const accuracy = typeof md?.accuracy === "number" ? md.accuracy : null;
+  return {
+    name: typeof md?.name === "string" && md.name.length > 0 ? md.name : "?",
+    type: typeName(md?.type),
+    power,
+    accuracy,
+  };
+}
+
+/**
+ * If the current phase is a LearnMovePhase, read the move it's offering, the learning mon's
+ * current moveset, and that mon's types — everything needed to decide whether/which to swap.
+ * The phase holds the move by id (`moveId`) and the learner by `partyMemberIndex`; the static
+ * move table is reached defensively (phase-local accessor, then a global `allMoves`). Returns
+ * null on any drift so the caller falls back to a safe decline.
+ */
+export function getLearnMoveCandidate(): LearnMoveCandidate | null {
+  const scene: any = getScene();
+  const phase: any = scene?.phaseManager?.getCurrentPhase?.();
+  if (!phase) return null;
+  const name = (typeof phase.phaseName === "string" ? phase.phaseName : phase?.constructor?.name) ?? "";
+  if (name !== "LearnMovePhase") return null;
+
+  const moveId = phase.moveId;
+  if (typeof moveId !== "number") return null;
+
+  // Resolve the static Move record. Prefer a phase-local accessor; fall back to a global table.
+  const all: any =
+    (typeof phase.getMove === "function" ? undefined : phase.allMoves) ??
+    (globalThis as any).allMoves ??
+    scene?.allMoves;
+  const move: any =
+    (typeof phase.getMove === "function" ? phase.getMove() : undefined) ??
+    (all && (Array.isArray(all) || typeof all === "object") ? all[moveId] : undefined);
+  if (!move) return null;
+
+  // Identify the learning Pokémon: the phase's party member, else the on-field lead.
+  const party: any[] =
+    (typeof scene?.getPlayerParty === "function" ? scene.getPlayerParty() : undefined) ?? [];
+  const idx = typeof phase.partyMemberIndex === "number" ? phase.partyMemberIndex : 0;
+  const learner: any = party[idx] ?? party[0];
+
+  const moveset: any[] = Array.isArray(learner?.moveset) ? learner.moveset : [];
+  const currentMoves = moveset.filter(Boolean).map(readMoveData);
+
+  const typesRaw =
+    (typeof learner?.getTypes === "function" ? learner.getTypes() : undefined) ??
+    [learner?.type1, learner?.type2];
+  const userTypes: string[] = [];
+  for (const t of Array.isArray(typesRaw) ? typesRaw : []) {
+    const s = typeName(t);
+    if (s && s !== "unknown") userTypes.push(s);
+  }
+
+  return { candidate: readMoveData(move), currentMoves, userTypes };
+}
+
 /** Reset the cached scene. Call if the bridge starts returning stale/dead handles. */
 export function resetBridge(): void {
   cached = null;
