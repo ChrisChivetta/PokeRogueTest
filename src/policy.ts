@@ -40,7 +40,7 @@ export async function step(s: GameSnapshot): Promise<void> {
   // the phase name when we actually have leftover state to clear.
   if (learnDecision != null || learnDeclined || learnMoveSteps > 0) {
     if (getCurrentPhaseName() !== "LearnMovePhase") {
-      learnDecision = null; learnDeclined = false; learnMoveSteps = 0;
+      learnDecision = null; learnDeclined = false; learnMoveSteps = 0; learnMoveCursor = null;
     }
   }
 
@@ -199,6 +199,14 @@ let learnMoveSteps = 0;
 // which we ACCEPT (yes, stop) so the decline terminates instead of looping back to the question.
 let learnDeclined = false;
 const MAX_LEARN_MOVE_STEPS = 24;
+// The SUMMARY (SummaryUiMode.LEARN_MOVE) move-row selector is the handler's `moveCursor`
+// (0-3 = forget that slot, 4 = don't learn). The bridge only exposes `cursor` = the summary
+// PAGE (Page.MOVES === 2), NOT `moveCursor`, so we CANNOT read the live row — reading
+// s.cursor there gives a constant 2 and any "walk to target" loop spins forever (the old
+// "DOWN (learn:slot-down)" wedge). Instead we TRACK moveCursor locally: it starts at 4 on
+// entry (showMoveSelect → setCursor(4)) and the game wraps DOWN as c<4?c+1:0, UP as c?c-1:4.
+// We mirror that math so our counter stays in lockstep, then ACTION when we reach the target.
+let learnMoveCursor: number | null = null;
 
 /**
  * Which party slot to act on, given the intent. PURE so it's unit-testable. A revive targets the
@@ -229,6 +237,7 @@ export function resetPolicy(): void {
   learnDecision = null;
   learnMoveSteps = 0;
   learnDeclined = false;
+  learnMoveCursor = null;
   resetCatch();
 }
 
@@ -471,11 +480,26 @@ async function handleLearnMove(s: GameSnapshot): Promise<void> {
 
     case "SUMMARY": {
       // SummaryUiMode.LEARN_MOVE: moveCursor 0-3 picks the slot to forget; 4 = don't learn.
+      // The bridge's s.cursor is the summary PAGE (always 2 = Page.MOVES here), NOT the move
+      // row — so we track the real moveCursor ourselves. It starts at 4 on entry; the game
+      // wraps DOWN as c<4?c+1:0 and UP as c?c-1:4. We mirror that exactly so our counter
+      // stays in lockstep with the on-screen highlight, then ACTION once we land on target.
       const target = decision.learn && decision.replaceIndex >= 0 ? decision.replaceIndex : 4;
-      const cur = typeof s.cursor === "number" ? s.cursor : 0;
-      if (cur < target) { await press(Button.DOWN, "learn:slot-down"); return; }
-      if (cur > target) { await press(Button.UP, "learn:slot-up"); return; }
-      await press(Button.ACTION, target === 4 ? "learn:slot-skip" : `learn:forget-slot${target}`);
+      if (learnMoveCursor == null) learnMoveCursor = 4; // showMoveSelect() → setCursor(4)
+      if (learnMoveCursor === target) {
+        learnMoveCursor = null; // selection consumed; reset for any future SUMMARY
+        await press(Button.ACTION, target === 4 ? "learn:slot-skip" : `learn:forget-slot${target}`);
+        return;
+      }
+      // Step one row toward the target along the shorter wrap direction, mirroring the game.
+      const downSteps = (target - learnMoveCursor + 5) % 5; // forward distance (DOWN wraps 4→0)
+      if (downSteps <= 5 - downSteps) {
+        learnMoveCursor = learnMoveCursor < 4 ? learnMoveCursor + 1 : 0;
+        await press(Button.DOWN, "learn:slot-down");
+      } else {
+        learnMoveCursor = learnMoveCursor ? learnMoveCursor - 1 : 4;
+        await press(Button.UP, "learn:slot-up");
+      }
       return;
     }
 

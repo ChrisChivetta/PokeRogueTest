@@ -208,19 +208,18 @@ describe("LearnMovePhase flow", () => {
     await step(snap({ uiMode: "CONFIRM", cursor: 0 }));
     expect(rec.presses).toEqual(["5:learn:replace-yes"]);
     rec.presses = [];
-    // SUMMARY: cursor starts at 0, needs to reach the chosen slot. Decision picks slot 1 or 2
-    // (a 40-power normal). Drive it down to the target then confirm.
-    let cursor = 0;
-    for (let i = 0; i < 6; i++) {
-      await step(snap({ uiMode: "SUMMARY", cursor }));
+    // SUMMARY: the move-row selector (moveCursor) starts at 4 and is INTERNAL to the game —
+    // the bridge's s.cursor is the summary PAGE (a constant 2 = Page.MOVES), so we pin it
+    // here and prove the policy reaches the target slot purely via its own tracked counter.
+    for (let i = 0; i < 8; i++) {
+      await step(snap({ uiMode: "SUMMARY", cursor: 2 }));
       const last = rec.presses[rec.presses.length - 1];
-      if (last.startsWith("1:learn:slot-down")) cursor++;
-      else if (last.startsWith("0:learn:slot-up")) cursor--;
-      else break; // a forget-slot ACTION
+      if (last.startsWith("5:learn:forget-slot")) break; // landed + confirmed
     }
     const final = rec.presses[rec.presses.length - 1];
     expect(final).toMatch(/^5:learn:forget-slot[123]$/);
-    expect(cursor).toBe(Number(final.slice(-1)));
+    // It should NOT have wedged spamming one direction: a few nav presses then ACTION.
+    expect(rec.presses.length).toBeLessThanOrEqual(5);
   });
 
   it("declines at CONFIRM (CANCEL), then says yes to the stop-teaching follow-up", async () => {
@@ -235,18 +234,29 @@ describe("LearnMovePhase flow", () => {
     expect(rec.presses).toEqual(["5:learn:stop-teaching"]);
   });
 
-  it("a declined SUMMARY parks the cursor on slot 4 (don't learn) and confirms", async () => {
+  it("a declined SUMMARY confirms slot 4 (don't learn) immediately — moveCursor starts at 4", async () => {
     phaseRef.current = "LearnMovePhase";
     learnRef.current = declineCandidate();
-    let cursor = 0;
-    for (let i = 0; i < 8; i++) {
-      await step(snap({ uiMode: "SUMMARY", cursor }));
-      const last = rec.presses[rec.presses.length - 1];
-      if (last.startsWith("1:learn:slot-down")) cursor++;
-      else break;
+    // moveCursor enters at 4 (the "don't learn" row) and the decline target IS 4, so the very
+    // first SUMMARY tick should ACTION-confirm with no navigation — and crucially must not
+    // spin pressing DOWN against the constant page cursor (the old wedge).
+    await step(snap({ uiMode: "SUMMARY", cursor: 2 }));
+    expect(rec.presses).toEqual(["5:learn:slot-skip"]);
+  });
+
+  it("never wedges spamming DOWN on SUMMARY when s.cursor (the page) is pinned at 2", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = acceptCandidate(); // target is a 0-3 forget slot, reached via nav
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 })); // ACTION → enter SUMMARY
+    rec.presses = [];
+    for (let i = 0; i < 12; i++) {
+      await step(snap({ uiMode: "SUMMARY", cursor: 2 })); // page cursor NEVER changes
+      if (rec.presses.at(-1)?.startsWith("5:learn:forget-slot")) break;
     }
-    expect(rec.presses[rec.presses.length - 1]).toBe("5:learn:slot-skip");
-    expect(cursor).toBe(4);
+    // Terminated with a forget ACTION, not an unbounded DOWN spam.
+    expect(rec.presses.at(-1)).toMatch(/^5:learn:forget-slot[123]$/);
+    const downs = rec.presses.filter((p) => p.startsWith("1:learn:slot-down")).length;
+    expect(downs).toBeLessThanOrEqual(3);
   });
 
   it("waits for the CONFIRM handler to initialize (null cursor) before deciding", async () => {
