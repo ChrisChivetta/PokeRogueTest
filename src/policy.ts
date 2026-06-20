@@ -106,6 +106,10 @@ export async function step(s: GameSnapshot): Promise<void> {
       break;
 
     case "CONFIRM": {
+      // Wait for the handler to initialize (cursor or awaitingActionInput becomes non-null).
+      // Some confirms (learn-move) are MESSAGE-backed and use awaitingActionInput; others
+      // (party-full) use a cursor. Wait for at least one to settle.
+      if (s.cursor == null && s.awaitingActionInput == null) return;
       // The post-catch "party is full" prompt is a 4-option confirm [Summary, Pokédex, Yes, No];
       // handle it specially (Part B) before the generic accept/decline.
       const ch = getActiveHandler();
