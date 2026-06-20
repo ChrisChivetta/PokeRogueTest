@@ -17,8 +17,10 @@
 //   • everything else    → wait
 
 import type { GameSnapshot } from "./state";
-import { Button, getActiveHandler, getMysteryEncounter, inMysteryEncounter } from "./bridge";
+import { Button, getActiveHandler, getMysteryEncounter, inMysteryEncounter, getLearnMoveCandidate, getCurrentPhaseName } from "./bridge";
 import { press, moveCursor2x2 } from "./input";
+import { evaluateLearnMove } from "./learnmove";
+import { log } from "./log";
 import { shouldCatch, pickBall, noteCatchAttempt, resetCatch, pickReleaseSlot } from "./catch";
 import { readPartyValue } from "./roster";
 import { config } from "./config";
@@ -32,6 +34,15 @@ const onField = (party: GameSnapshot["playerParty"]) => party.find((p) => p.onFi
 /** Perform at most one paced action appropriate to the current state. */
 export async function step(s: GameSnapshot): Promise<void> {
   if (!s.ready) return;
+
+  // Clear any stale learn-move decision once we've left the phase, so the NEXT learn-move
+  // interaction (different mon / different move) recomputes from scratch. Cheap: only probes
+  // the phase name when we actually have leftover state to clear.
+  if (learnDecision != null || learnDeclined || learnMoveSteps > 0) {
+    if (getCurrentPhaseName() !== "LearnMovePhase") {
+      learnDecision = null; learnDeclined = false; learnMoveSteps = 0;
+    }
+  }
 
   switch (s.uiMode) {
     case "COMMAND": {
@@ -106,10 +117,12 @@ export async function step(s: GameSnapshot): Promise<void> {
       break;
 
     case "CONFIRM": {
-      // Wait for the handler to initialize (cursor or awaitingActionInput becomes non-null).
-      // Some confirms (learn-move) are MESSAGE-backed and use awaitingActionInput; others
-      // (party-full) use a cursor. Wait for at least one to settle.
-      if (s.cursor == null && s.awaitingActionInput == null) return;
+      // A learn-move replacement prompt is also a CONFIRM, but we drive it with an actual
+      // moveset decision (handleLearnMove), not the generic decline. Route it there first.
+      if (getCurrentPhaseName() === "LearnMovePhase") { await handleLearnMove(s); return; }
+      // Wait for the handler to initialize (cursor becomes non-null). awaitingActionInput
+      // is coerced to a strict boolean upstream (state.ts), so cursor is the real signal.
+      if (s.cursor == null) return;
       // The post-catch "party is full" prompt is a 4-option confirm [Summary, Pokédex, Yes, No];
       // handle it specially (Part B) before the generic accept/decline.
       const ch = getActiveHandler();
@@ -117,7 +130,7 @@ export async function step(s: GameSnapshot): Promise<void> {
         await handleFullPartyConfirm(ch);
         return;
       }
-      // Accept our own skip confirmation; decline everything else (e.g. learn-a-move).
+      // Accept our own skip confirmation; decline everything else.
       if (acceptNextConfirm) {
         acceptNextConfirm = false;
         await press(Button.ACTION, "confirm:accept-skip");
@@ -128,18 +141,19 @@ export async function step(s: GameSnapshot): Promise<void> {
     }
 
     case "SUMMARY":
-      // Not part of normal battle flow — back out so a stray summary screen can't
-      // wedge the bot (also makes it resilient to unexpected UI states generally).
+      // The learn-move flow opens SUMMARY (SummaryUiMode.LEARN_MOVE) to pick which of the
+      // four moves to forget — drive that deliberately. Any OTHER summary is out-of-band, so
+      // back out (keeps a stray summary screen from wedging the bot).
+      if (getCurrentPhaseName() === "LearnMovePhase") { await handleLearnMove(s); return; }
       await press(Button.CANCEL, "summary:back");
       return;
   }
 
-  // Dialogue / message prompts: advance when the handler is waiting OR when we're in a
-  // phase that needs manual advancement (e.g. LearnMovePhase, where awaitingActionInput
-  // stays null but the phase expects ACTION presses to advance through the dialogue).
-  const phase = (s as any).phase ?? "";
-  const needsManualAdvance = phase === "LearnMovePhase";
-  if (s.awaitingActionInput || needsManualAdvance) {
+  // Learn-move dialogue also surfaces as plain MESSAGE before the CONFIRM — advance it.
+  if (getCurrentPhaseName() === "LearnMovePhase") { await handleLearnMove(s); return; }
+
+  // Dialogue / message prompts: advance only when the handler is genuinely waiting.
+  if (s.awaitingActionInput) {
     await press(Button.ACTION, "advance");
     return;
   }
@@ -174,6 +188,18 @@ const MAX_SHOP_BUYS = 8;
 let releasingForSwap = false;
 let releaseSlot = -1;
 
+// ── Learn-move state ─────────────────────────────────────────────────────────
+// The learn-move flow spans MESSAGE → CONFIRM → SUMMARY. We compute the decision once
+// (at the CONFIRM/SUMMARY point, when the candidate + moveset are readable) and remember
+// it: whether to learn and which slot (0-3) to forget. learnMoveSteps bounds the whole
+// interaction so a misread can never loop forever — past the cap we cleanly decline.
+let learnDecision: { learn: boolean; replaceIndex: number } | null = null;
+let learnMoveSteps = 0;
+// True after we've declined the replacement: the next CONFIRM is the "stop teaching?" prompt,
+// which we ACCEPT (yes, stop) so the decline terminates instead of looping back to the question.
+let learnDeclined = false;
+const MAX_LEARN_MOVE_STEPS = 24;
+
 /**
  * Which party slot to act on, given the intent. PURE so it's unit-testable. A revive targets the
  * first FAINTED mon; a heal the MOST-HURT live mon; a switch the HEALTHIEST live mon. Returns -1
@@ -200,6 +226,9 @@ export function resetPolicy(): void {
   shopBuys = 0;
   releasingForSwap = false;
   releaseSlot = -1;
+  learnDecision = null;
+  learnMoveSteps = 0;
+  learnDeclined = false;
   resetCatch();
 }
 
@@ -308,6 +337,18 @@ async function handleParty(s: GameSnapshot): Promise<void> {
   const h = getActiveHandler();
   if (!h) return;
 
+  // FORCED SWITCH: when a mon faints, SwitchPhase opens the party screen and REQUIRES a
+  // replacement — it cannot be cancelled. Stale reward-flow flags (skipNextReward / pendingApply /
+  // releasingForSwap) from an earlier reward must not leak in here, or we'd spam an ineffective
+  // CANCEL and wedge (the "2:PARTY:SwitchPhase" loop). Clear them so we fall through to picking the
+  // healthiest live mon below. A faint-switch is a plain switch: pendingApply stays null.
+  if (getCurrentPhaseName() === "SwitchPhase") {
+    skipNextReward = false;
+    pendingApply = null;
+    releasingForSwap = false;
+    releaseSlot = -1;
+  }
+
   if (h.optionsMode === true && Array.isArray(h.options)) {
     const opts: number[] = h.options;
     // Choose the per-mon action: revive → REVIVE; heal → APPLY; releasing a passenger → RELEASE;
@@ -375,6 +416,74 @@ async function handleFullPartyConfirm(h: any): Promise<void> {
   if (cur < target) { await press(Button.DOWN, "fullparty:down"); return; }
   if (cur > target) { await press(Button.UP, "fullparty:up"); return; }
   await press(Button.ACTION, slot >= 0 ? "fullparty:swap" : "fullparty:box");
+}
+
+/**
+ * Drive the whole LearnMovePhase coherently across its three UI modes, using a real moveset
+ * decision instead of blind always-accept/always-decline (which fought itself and looped).
+ *
+ * Flow (PokéRogue source): MESSAGE "Should a move be forgotten…?" → CONFIRM (yes→SUMMARY move
+ * pick / no→stop-teaching CONFIRM) → SUMMARY (SummaryUiMode.LEARN_MOVE, moveCursor 0-3 = forget
+ * that slot, 4 = don't learn) → MESSAGE.
+ *
+ * We compute the decision ONCE (cached in learnDecision) the first time we can read the
+ * candidate + moveset, then:
+ *   • MESSAGE  → ACTION to advance dialogue toward the CONFIRM.
+ *   • CONFIRM  → learn? ACTION (yes) : CANCEL (no). After a decline, the next CONFIRM is the
+ *                "stop teaching?" prompt — ACCEPT it (ACTION) so the decline actually ends.
+ *   • SUMMARY  → walk moveCursor to replaceIndex (0-3) and ACTION; on a decline that reached
+ *                SUMMARY, go to 4 (don't-learn) and ACTION.
+ * A hard step cap defaults to a clean decline if anything is unreadable, so we can't wedge.
+ */
+async function handleLearnMove(s: GameSnapshot): Promise<void> {
+  // Compute (and cache) the decision as soon as the candidate is readable.
+  if (learnDecision == null) {
+    const info = getLearnMoveCandidate();
+    if (info) {
+      const d = evaluateLearnMove(info.candidate, info.currentMoves, info.userTypes);
+      learnDecision = { learn: d.learn, replaceIndex: d.replaceIndex };
+      log.info(`[learn-move] ${d.reason} → ${d.learn ? `replace slot ${d.replaceIndex}` : "decline"}`);
+    }
+  }
+  // Safety: bound the interaction. If we somehow can't progress, decline cleanly.
+  if (++learnMoveSteps > MAX_LEARN_MOVE_STEPS) {
+    learnDecision = { learn: false, replaceIndex: -1 };
+  }
+  // Default to a safe decline until we can read a decision (never accept on a blind guess).
+  const decision = learnDecision ?? { learn: false, replaceIndex: -1 };
+
+  switch (s.uiMode) {
+    case "CONFIRM": {
+      if (s.cursor == null && !learnDeclined) return; // wait for the confirm to initialize
+      if (learnDeclined) {
+        // The "stop teaching this move?" follow-up to our decline — say yes (ACTION) to end it.
+        await press(Button.ACTION, "learn:stop-teaching");
+        return;
+      }
+      if (decision.learn && decision.replaceIndex >= 0) {
+        await press(Button.ACTION, "learn:replace-yes"); // → SUMMARY move-pick
+      } else {
+        learnDeclined = true;
+        await press(Button.CANCEL, "learn:replace-no"); // → stop-teaching confirm
+      }
+      return;
+    }
+
+    case "SUMMARY": {
+      // SummaryUiMode.LEARN_MOVE: moveCursor 0-3 picks the slot to forget; 4 = don't learn.
+      const target = decision.learn && decision.replaceIndex >= 0 ? decision.replaceIndex : 4;
+      const cur = typeof s.cursor === "number" ? s.cursor : 0;
+      if (cur < target) { await press(Button.DOWN, "learn:slot-down"); return; }
+      if (cur > target) { await press(Button.UP, "learn:slot-up"); return; }
+      await press(Button.ACTION, target === 4 ? "learn:slot-skip" : `learn:forget-slot${target}`);
+      return;
+    }
+
+    default:
+      // MESSAGE / transitions — advance the dialogue toward the decision point.
+      await press(Button.ACTION, "learn:advance");
+      return;
+  }
 }
 
 // ── Mystery encounters ───────────────────────────────────────────────────────

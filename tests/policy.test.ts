@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Capture intended presses instead of sending them.
 const rec = vi.hoisted(() => ({ presses: [] as string[] }));
@@ -11,6 +11,9 @@ vi.mock("../src/input", () => ({
 // Control the live handler (PARTY / ME internals) while keeping the real Button values.
 const hRef = vi.hoisted(() => ({ current: null as any }));
 const meRef = vi.hoisted(() => ({ current: null as any }));
+// Control the current phase + learn-move candidate (drives the LearnMovePhase flow).
+const phaseRef = vi.hoisted(() => ({ current: null as string | null }));
+const learnRef = vi.hoisted(() => ({ current: null as any }));
 vi.mock("../src/bridge", async (orig) => {
   const actual = await orig<typeof import("../src/bridge")>();
   return {
@@ -18,6 +21,8 @@ vi.mock("../src/bridge", async (orig) => {
     getActiveHandler: () => hRef.current,
     getMysteryEncounter: () => meRef.current,
     inMysteryEncounter: () => meRef.current != null,
+    getCurrentPhaseName: () => phaseRef.current,
+    getLearnMoveCandidate: () => learnRef.current,
   };
 });
 
@@ -31,6 +36,7 @@ vi.mock("../src/roster", () => ({
 }));
 
 import { resetPolicy, step, pickPartyTarget } from "../src/policy";
+import { getPolicy, setPolicy, resetPolicyRegistry } from "../src/policy-registry";
 import { resetRetry, noteRetry } from "../src/retry";
 import type { GameSnapshot } from "../src/state";
 
@@ -41,7 +47,11 @@ const snap = (o: Partial<GameSnapshot>): GameSnapshot =>
 const p = (o: any) => ({ name: "p", fainted: false, hpRatio: 1, onField: false, types: [], moves: [], ...o });
 
 // Button values (from bridge): UP0 DOWN1 LEFT2 RIGHT3 SUBMIT4 ACTION5 CANCEL6
-beforeEach(() => { rec.presses = []; hRef.current = null; meRef.current = null; resetPolicy(); resetRetry(); });
+beforeEach(() => {
+  rec.presses = []; hRef.current = null; meRef.current = null;
+  phaseRef.current = null; learnRef.current = null;
+  resetPolicy(); resetRetry();
+});
 
 // Build a fake MysteryEncounterUiHandler. `modes`/`reqs` describe each option; cursor is
 // the current grid position. Mirrors the real handler's getCursor()/encounterOptions/
@@ -160,6 +170,106 @@ describe("policy routing", () => {
   });
 });
 
+describe("LearnMovePhase flow", () => {
+  // A learn candidate the scorer will ACCEPT (strong STAB), replacing slot 1.
+  const acceptCandidate = () => ({
+    candidate: { name: "Flamethrower", type: "fire", power: 90, accuracy: 100 },
+    currentMoves: [
+      { name: "Ember", type: "fire", power: 40, accuracy: 100 },
+      { name: "Tackle", type: "normal", power: 40, accuracy: 100 },
+      { name: "Scratch", type: "normal", power: 40, accuracy: 100 },
+      { name: "Bite", type: "dark", power: 60, accuracy: 100 },
+    ],
+    userTypes: ["fire"],
+  });
+  // A learn candidate the scorer will DECLINE (weak, beaten by every slot).
+  const declineCandidate = () => ({
+    candidate: { name: "Tackle", type: "normal", power: 40, accuracy: 100 },
+    currentMoves: [
+      { name: "Flamethrower", type: "fire", power: 90, accuracy: 100 },
+      { name: "Surf", type: "water", power: 90, accuracy: 100 },
+      { name: "Thunderbolt", type: "electric", power: 90, accuracy: 100 },
+      { name: "Ice Beam", type: "ice", power: 90, accuracy: 100 },
+    ],
+    userTypes: ["fire"],
+  });
+
+  it("routes a MESSAGE under LearnMovePhase to advance (not silent)", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = acceptCandidate();
+    await step(snap({ uiMode: "MESSAGE", awaitingActionInput: false }));
+    expect(rec.presses).toEqual(["5:learn:advance"]);
+  });
+
+  it("accepts the swap at CONFIRM (ACTION), then forgets the chosen slot at SUMMARY", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = acceptCandidate(); // weakest of the set → replace a 40-power normal slot
+    // CONFIRM "should it forget a move?" → yes (ACTION)
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 }));
+    expect(rec.presses).toEqual(["5:learn:replace-yes"]);
+    rec.presses = [];
+    // SUMMARY: cursor starts at 0, needs to reach the chosen slot. Decision picks slot 1 or 2
+    // (a 40-power normal). Drive it down to the target then confirm.
+    let cursor = 0;
+    for (let i = 0; i < 6; i++) {
+      await step(snap({ uiMode: "SUMMARY", cursor }));
+      const last = rec.presses[rec.presses.length - 1];
+      if (last.startsWith("1:learn:slot-down")) cursor++;
+      else if (last.startsWith("0:learn:slot-up")) cursor--;
+      else break; // a forget-slot ACTION
+    }
+    const final = rec.presses[rec.presses.length - 1];
+    expect(final).toMatch(/^5:learn:forget-slot[123]$/);
+    expect(cursor).toBe(Number(final.slice(-1)));
+  });
+
+  it("declines at CONFIRM (CANCEL), then says yes to the stop-teaching follow-up", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = declineCandidate();
+    // First CONFIRM: the "forget a move?" prompt → no (CANCEL), arms learnDeclined.
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 }));
+    expect(rec.presses).toEqual(["6:learn:replace-no"]);
+    rec.presses = [];
+    // Second CONFIRM: the "stop teaching?" follow-up → yes (ACTION) to end the phase.
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 }));
+    expect(rec.presses).toEqual(["5:learn:stop-teaching"]);
+  });
+
+  it("a declined SUMMARY parks the cursor on slot 4 (don't learn) and confirms", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = declineCandidate();
+    let cursor = 0;
+    for (let i = 0; i < 8; i++) {
+      await step(snap({ uiMode: "SUMMARY", cursor }));
+      const last = rec.presses[rec.presses.length - 1];
+      if (last.startsWith("1:learn:slot-down")) cursor++;
+      else break;
+    }
+    expect(rec.presses[rec.presses.length - 1]).toBe("5:learn:slot-skip");
+    expect(cursor).toBe(4);
+  });
+
+  it("waits for the CONFIRM handler to initialize (null cursor) before deciding", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = acceptCandidate();
+    await step(snap({ uiMode: "CONFIRM", cursor: null as any }));
+    expect(rec.presses).toEqual([]); // no input until the confirm menu is ready
+  });
+
+  it("falls back to a safe decline when the candidate is unreadable", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = null; // bridge could not read the move
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 }));
+    expect(rec.presses).toEqual(["6:learn:replace-no"]); // decline, never blind-accept
+  });
+
+  it("does not hijack a normal CONFIRM when the phase is not LearnMovePhase", async () => {
+    phaseRef.current = "SomeOtherPhase";
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 }));
+    expect(rec.presses).toEqual(["6:confirm:decline"]); // the generic decline path
+  });
+});
+
 describe("PARTY option targeting (the previously-buggy path)", () => {
   it("navigates the option cursor to SEND_OUT, not the first option (SUMMARY)", async () => {
     hRef.current = { optionsMode: true, options: [6, 0, -1], optionsCursor: 0 }; // [SUMMARY, SEND_OUT, CANCEL]
@@ -204,6 +314,25 @@ describe("PARTY option targeting (the previously-buggy path)", () => {
     const party = [p({ fainted: true, hpRatio: 0 }), p({ hpRatio: 0.8 })];
     await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: party }));
     // healthiest non-fainted is index 1 → move DOWN toward it
+    expect(rec.presses).toEqual(["1:party:nav"]);
+  });
+
+  it("a forced SwitchPhase picks a healthy mon even with a stale reward-skip flag set", async () => {
+    // Repro of the live "2:PARTY:SwitchPhase" wedge: an earlier unusable-reward menu sets the
+    // skipNextReward flag (it CANCELs out of a reward target it can't use), then a mon faints and
+    // SwitchPhase force-opens PARTY. The stale flag must NOT make us spam an ineffective CANCEL.
+    phaseRef.current = "MoveEndPhase";
+    hRef.current = { optionsMode: true, options: [4, -1], optionsCursor: 0 }; // TEACH-only → unusable
+    await step(snap({ uiMode: "PARTY" }));
+    expect(rec.presses.at(-1)).toBe("6:party:abandon-options"); // sets skipNextReward
+    rec.presses = [];
+
+    // Now a mon faints → forced switch. Slot 0 fainted, slot 1 healthy.
+    phaseRef.current = "SwitchPhase";
+    hRef.current = { optionsMode: false };
+    const party = [p({ fainted: true, hpRatio: 0 }), p({ hpRatio: 0.9 })];
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: party }));
+    // Must navigate toward the healthy mon (index 1), NOT CANCEL/exit-to-skip.
     expect(rec.presses).toEqual(["1:party:nav"]);
   });
 
@@ -388,5 +517,29 @@ describe("full-party catch confirm (Part B)", () => {
     hRef.current = { config: { options: [0, 0] }, cursor: 0 };
     await step(snap({ uiMode: "CONFIRM" }));
     expect(rec.presses).toEqual(["6:confirm:decline"]);
+  });
+});
+
+// The live drive loop (main.ts tick) doesn't call the static `step` import directly — it routes
+// through the hot-swap registry: `await getPolicy()(snap)`. These tests pin that seam so a swapped
+// policy actually takes over the tick, and the built-in policy still drives by default.
+describe("tick routes through the hot-swap registry", () => {
+  afterEach(() => resetPolicyRegistry());
+
+  it("by default getPolicy() is the built-in step (same routing as a direct call)", async () => {
+    // FIGHT cursor on COMMAND just confirms — same observable behavior as `step` itself.
+    hRef.current = { commandCursor: 0 };
+    await getPolicy()(snap({ uiMode: "COMMAND", cursor: 0 }));
+    expect(rec.presses).toEqual(["5:command:fight"]);
+  });
+
+  it("after a swap, the tick seam calls the NEW policy instead of the built-in", async () => {
+    const seen: GameSnapshot[] = [];
+    setPolicy({ step: async (s) => { seen.push(s); } });
+    const s = snap({ uiMode: "COMMAND", cursor: 0 });
+    await getPolicy()(s);
+    // The built-in would have pressed FIGHT; the swapped policy ran instead (no presses, got the snap).
+    expect(rec.presses).toEqual([]);
+    expect(seen).toEqual([s]);
   });
 });
