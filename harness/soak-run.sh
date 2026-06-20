@@ -49,5 +49,5 @@ fi
 curl -s -m 2 "http://127.0.0.1:$PORT/" >/dev/null 2>&1 || { echo "dev server failed to start; see /tmp/vite-soak.log"; exit 1; }
 
 export SOAK_URL="http://127.0.0.1:$PORT/"
-echo "== soaking against $SOAK_URL (SOAK_HOURS=${SOAK_HOURS:-6}, SOAK_GL=${SOAK_GL:-swiftshader})"
+echo "== soaking against $SOAK_URL (duration: ${SOAK_HOURS:+SOAK_HOURS=$SOAK_HOURS}${SOAK_HOURS:-SOAK_MINUTES=${SOAK_MINUTES:-15}}, SOAK_GL=${SOAK_GL:-swiftshader})"
 cd "$BOT_DIR" && exec node harness/soak.mjs

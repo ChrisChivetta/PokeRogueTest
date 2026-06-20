@@ -7,7 +7,8 @@
 //
 // Usage:  node harness/soak.mjs        (dev server must be up on SOAK_URL)
 // Env:    SOAK_URL (default http://127.0.0.1:8000/)
-//         SOAK_HOURS (default 6)              — how long to run
+//         SOAK_MINUTES (default 15)           — how long to run (SOAK_HOURS overrides if set)
+//         SOAK_HOURS (unset by default)       — how long to run, in hours (takes precedence)
 //         SOAK_GL (default swiftshader)       — auto | swiftshader | egl | desktop
 //                                                 (auto = real GPU; use auto on a Mac, egl on a Linux GPU box)
 //         SOAK_HEADED (default 0)              — 1 = visible window (real GPU accel; best on a Mac desktop)
@@ -20,8 +21,13 @@ import { chromium } from "playwright";
 import { readFileSync, appendFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 
 const URL = process.env.SOAK_URL ?? "http://127.0.0.1:8000/";
-const HOURS = Number(process.env.SOAK_HOURS ?? 6);
-const DEADLINE = Date.now() + HOURS * 3600_000;
+// Duration: SOAK_HOURS wins if set; otherwise SOAK_MINUTES (default 15 — the policy is still
+// young, so short, frequent soaks beat one long one). HOURS is kept for telemetry/back-compat.
+const MINUTES = process.env.SOAK_HOURS != null
+  ? Number(process.env.SOAK_HOURS) * 60
+  : Number(process.env.SOAK_MINUTES ?? 15);
+const HOURS = MINUTES / 60;
+const DEADLINE = Date.now() + MINUTES * 60_000;
 const GL = process.env.SOAK_GL ?? "swiftshader";
 const HEADED = process.env.SOAK_HEADED === "1"; // visible window → real GPU (best on a Mac/desktop)
 const LOG = process.env.SOAK_LOG ?? `soak-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`;
@@ -135,7 +141,7 @@ async function reloadPolicyFromDisk(page) {
 
 let browser = await chromium.launch(launchOpts);
 let page = await bootBot(browser);
-emit("start", { url: URL, hours: HOURS, gl: GL, headed: HEADED, log: LOG, enableRetries: ENABLE_RETRIES, humanPacing: HUMAN_PACING });
+emit("start", { url: URL, minutes: MINUTES, hours: HOURS, gl: GL, headed: HEADED, log: LOG, enableRetries: ENABLE_RETRIES, humanPacing: HUMAN_PACING });
 
 let inRun = false, run = null, lastSummary = Date.now();
 // Stall watchdog: the "progress key" (wave:mode:phase) should change as the bot plays. If it
