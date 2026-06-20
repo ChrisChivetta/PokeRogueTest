@@ -187,6 +187,13 @@ const MAX_SHOP_BUYS = 8;
 // Part B: we chose to keep a full-party catch and are releasing a passenger; releaseSlot is which.
 let releasingForSwap = false;
 let releaseSlot = -1;
+// FORCED-SWITCH slot exclusion. The game only offers SEND_OUT for party slots that are NOT
+// already on the field (updateOptions: `cursor >= getBattlerCount()`). If we open the per-mon
+// menu on a slot the game won't let us send out, SEND_OUT is absent and the old code set
+// skipNextReward + CANCELled — but the SwitchPhase guard clears skipNextReward every tick, so we
+// just re-opened the menu forever (the "2:PARTY:SwitchPhase" open/abandon oscillation). Instead we
+// remember that slot here, back out, and pickPartyTarget skips it so we try the NEXT eligible mon.
+let switchAvoidSlots = new Set<number>();
 
 // ── Learn-move state ─────────────────────────────────────────────────────────
 // The learn-move flow spans MESSAGE → CONFIRM → SUMMARY. We compute the decision once
@@ -213,15 +220,22 @@ let learnMoveCursor: number | null = null;
  * first FAINTED mon; a heal the MOST-HURT live mon; a switch the HEALTHIEST live mon. Returns -1
  * if there's no valid target (e.g. a revive with nobody fainted).
  */
-export function pickPartyTarget(party: GameSnapshot["playerParty"], intent: "revive" | "heal" | "switch"): number {
-  if (intent === "revive") return party.findIndex((p) => p.fainted);
+export function pickPartyTarget(
+  party: GameSnapshot["playerParty"],
+  intent: "revive" | "heal" | "switch",
+  avoid?: Set<number>,
+): number {
+  const skip = (i: number) => (avoid?.has(i) ?? false);
+  if (intent === "revive") return party.findIndex((p, i) => p.fainted && !skip(i));
   let target = -1;
   if (intent === "heal") {
     let worst = Infinity;
-    party.forEach((p, i) => { if (!p.fainted) { const hp = p.hpRatio ?? 1; if (hp < worst) { worst = hp; target = i; } } });
+    party.forEach((p, i) => { if (!p.fainted && !skip(i)) { const hp = p.hpRatio ?? 1; if (hp < worst) { worst = hp; target = i; } } });
   } else {
+    // switch: prefer the healthiest live mon the game will actually let us send out (avoid set
+    // holds slots where SEND_OUT wasn't offered — typically the on-field mon at index < battlerCount).
     let best = -1;
-    party.forEach((p, i) => { if (!p.fainted) { const hp = p.hpRatio ?? 1; if (hp > best) { best = hp; target = i; } } });
+    party.forEach((p, i) => { if (!p.fainted && !skip(i)) { const hp = p.hpRatio ?? 1; if (hp > best) { best = hp; target = i; } } });
   }
   return target;
 }
@@ -234,6 +248,7 @@ export function resetPolicy(): void {
   shopBuys = 0;
   releasingForSwap = false;
   releaseSlot = -1;
+  switchAvoidSlots = new Set<number>();
   learnDecision = null;
   learnMoveSteps = 0;
   learnDeclined = false;
@@ -372,6 +387,16 @@ async function handleParty(s: GameSnapshot): Promise<void> {
     // that's the "choose this Pokémon" action the encounter is waiting on.
     if (target < 0 && inMysteryEncounter()) target = opts.indexOf(PARTY_SELECT);
     if (target < 0) {
+      if (getCurrentPhaseName() === "SwitchPhase") {
+        // Forced switch but this slot's menu offers no SEND_OUT — the game only offers it for
+        // slots NOT already on the field (updateOptions: cursor >= battlerCount). Don't set
+        // skipNextReward (a forced switch can't be skipped, and the SwitchPhase guard clears the
+        // flag every tick → open/abandon oscillation). Instead blacklist this slot and back out so
+        // pickPartyTarget moves to the NEXT eligible mon. cursor here is the open mon's party slot.
+        if (typeof s.cursor === "number" && s.cursor >= 0) switchAvoidSlots.add(s.cursor);
+        await press(Button.CANCEL, "party:switch-slot-illegal");
+        return;
+      }
       // No clean action (e.g. a TM's TEACH-only menu) → abandon this reward.
       skipNextReward = true;
       await press(Button.CANCEL, "party:abandon-options");
@@ -380,6 +405,9 @@ async function handleParty(s: GameSnapshot): Promise<void> {
     const oc = typeof h.optionsCursor === "number" ? h.optionsCursor : 0;
     if (oc < target) { await press(Button.DOWN, "party:opt-down"); return; }
     if (oc > target) { await press(Button.UP, "party:opt-up"); return; }
+    // A clean action landed — the forced-switch blacklist has served its purpose; clear it so a
+    // later switch this run starts fresh (slot identities can shift after a swap).
+    if (switchAvoidSlots.size > 0) switchAvoidSlots = new Set<number>();
     await press(Button.ACTION, "party:select-option");
     return;
   }
@@ -394,10 +422,19 @@ async function handleParty(s: GameSnapshot): Promise<void> {
   if (s.cursor == null) return;
 
   // Pick the target: releasing a passenger (Part B) → that exact slot; revive → a FAINTED mon;
-  // heal → the MOST-HURT live mon; otherwise (a switch) → the HEALTHIEST live mon.
-  const target = releasingForSwap
+  // heal → the MOST-HURT live mon; otherwise (a switch) → the HEALTHIEST live mon. The avoid set
+  // (forced-switch only) skips slots whose option menu offered no SEND_OUT (the on-field mon).
+  const intent = pendingApply ?? "switch";
+  let target = releasingForSwap
     ? releaseSlot
-    : pickPartyTarget(s.playerParty, pendingApply ?? "switch");
+    : pickPartyTarget(s.playerParty, intent, switchAvoidSlots);
+
+  // Forced switch with every live slot blacklisted means our blacklist over-excluded (a misread).
+  // The game guarantees a sendable mon exists, so clear it and retry rather than wedge on CANCEL.
+  if (target < 0 && intent === "switch" && switchAvoidSlots.size > 0) {
+    switchAvoidSlots = new Set<number>();
+    target = pickPartyTarget(s.playerParty, "switch");
+  }
 
   if (target < 0) {
     // No valid target (e.g. a revive with nobody fainted) → back out rather than loop on it.

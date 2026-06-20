@@ -360,6 +360,49 @@ describe("PARTY option targeting (the previously-buggy path)", () => {
     await step(snap({ uiMode: "PARTY" }));
     expect(rec.presses).toEqual(["5:party:select-option"]);
   });
+
+  it("forced-switch on a slot with no SEND_OUT blacklists it and moves on (no open/abandon oscillation)", async () => {
+    // Repro of the live "2:PARTY:SwitchPhase" open/abandon wedge: the game only offers SEND_OUT for
+    // party slots NOT already on the field (updateOptions: cursor >= battlerCount). If pickPartyTarget
+    // lands us on a slot whose menu lacks SEND_OUT, the OLD code set skipNextReward + CANCELled, and
+    // the SwitchPhase guard cleared that flag every tick → we re-opened the menu forever.
+    phaseRef.current = "SwitchPhase";
+    // Two live mons: slot 0 (the on-field mon — game won't offer SEND_OUT here) and slot 1 (the bench).
+    const party = [p({ hpRatio: 1, onField: true }), p({ hpRatio: 0.9 })];
+
+    // Drive several ticks alternating closed-menu (navigation) and open-menu (no SEND_OUT on slot 0).
+    // It must NOT oscillate open↔abandon forever; within a handful of ticks it must reach SEND_OUT.
+    let reachedSendOut = false;
+    let abandonOnSlot0 = 0;
+    for (let i = 0; i < 12 && !reachedSendOut; i++) {
+      rec.presses = [];
+      // Closed menu first: let it pick/navigate the party cursor.
+      hRef.current = { optionsMode: false };
+      await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: party }));
+      const navOrOpen = rec.presses.at(-1) ?? "";
+
+      // Mirror the game: opening options on slot 0 yields a menu WITHOUT SEND_OUT; slot 1 has it.
+      // We infer the targeted slot from whether it opened options at cursor 0 vs navigated.
+      if (navOrOpen === "5:party:open-options") {
+        // Options opened on slot 0 (cursor 0) — game offers [SUMMARY, CANCEL], no SEND_OUT.
+        rec.presses = [];
+        hRef.current = { optionsMode: true, options: [6, -1], optionsCursor: 0 };
+        await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: party }));
+        expect(rec.presses).toEqual(["6:party:switch-slot-illegal"]); // backs out, blacklists slot 0
+        abandonOnSlot0++;
+      } else if (navOrOpen === "1:party:nav") {
+        // Navigated toward slot 1 (the bench mon) — open its menu, which HAS SEND_OUT.
+        rec.presses = [];
+        hRef.current = { optionsMode: true, options: [0, 6, -1], optionsCursor: 0 }; // [SEND_OUT, SUMMARY, CANCEL]
+        await step(snap({ uiMode: "PARTY", cursor: 1, playerParty: party }));
+        expect(rec.presses).toEqual(["5:party:select-option"]);
+        reachedSendOut = true;
+      }
+    }
+    expect(reachedSendOut).toBe(true);
+    // Slot 0 must only be abandoned ONCE (it gets blacklisted), never spammed.
+    expect(abandonOnSlot0).toBeLessThanOrEqual(1);
+  });
 });
 
 describe("mystery encounters", () => {
@@ -436,6 +479,10 @@ describe("pickPartyTarget", () => {
   it("switch → healthiest live slot", () => expect(pickPartyTarget(party, "switch")).toBe(0));
   it("revive with nobody fainted → -1 (no valid target)", () =>
     expect(pickPartyTarget([p({ fainted: false, hpRatio: 0.5 })], "revive")).toBe(-1));
+  it("switch → skips blacklisted slots (the on-field mon) and picks the next-healthiest", () =>
+    expect(pickPartyTarget(party, "switch", new Set([0]))).toBe(2)); // 0 excluded → next live is slot 2
+  it("switch → all live slots blacklisted → -1 (caller clears + retries)", () =>
+    expect(pickPartyTarget(party, "switch", new Set([0, 2]))).toBe(-1));
 });
 
 describe("reward apply targeting (the revive-loop fix)", () => {
