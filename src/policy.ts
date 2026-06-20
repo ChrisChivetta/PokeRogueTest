@@ -332,6 +332,9 @@ async function handleParty(s: GameSnapshot): Promise<void> {
     return;
   }
 
+  // Wait for the handler to initialize (cursor becomes non-null).
+  if (s.cursor == null) return;
+
   // Pick the target: releasing a passenger (Part B) → that exact slot; revive → a FAINTED mon;
   // heal → the MOST-HURT live mon; otherwise (a switch) → the HEALTHIEST live mon.
   const target = releasingForSwap
@@ -345,7 +348,7 @@ async function handleParty(s: GameSnapshot): Promise<void> {
     return;
   }
 
-  const cur = s.cursor ?? 0;
+  const cur = s.cursor;
   if (cur < target) { await press(Button.DOWN, "party:nav"); return; }
   if (cur > target) { await press(Button.UP, "party:nav"); return; }
   await press(Button.ACTION, "party:open-options");
