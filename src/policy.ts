@@ -134,8 +134,12 @@ export async function step(s: GameSnapshot): Promise<void> {
       return;
   }
 
-  // Dialogue / message prompts: advance ONLY when the handler is actually waiting.
-  if (s.awaitingActionInput) {
+  // Dialogue / message prompts: advance when the handler is waiting OR when we're in a
+  // phase that needs manual advancement (e.g. LearnMovePhase, where awaitingActionInput
+  // stays null but the phase expects ACTION presses to advance through the dialogue).
+  const phase = (s as any).phase ?? "";
+  const needsManualAdvance = phase === "LearnMovePhase";
+  if (s.awaitingActionInput || needsManualAdvance) {
     await press(Button.ACTION, "advance");
     return;
   }
