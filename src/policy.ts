@@ -509,17 +509,33 @@ async function handleParty(s: GameSnapshot): Promise<void> {
     // that's the "choose this Pokémon" action the encounter is waiting on.
     if (target < 0 && inMysteryEncounter()) target = opts.indexOf(PARTY_SELECT);
     if (target < 0) {
-      if (getCurrentPhaseName() === "SwitchPhase") {
-        // Forced switch but this slot's menu offers no SEND_OUT — the game only offers it for
-        // slots NOT already on the field (updateOptions: cursor >= battlerCount). Don't set
-        // skipNextReward (a forced switch can't be skipped, and the SwitchPhase guard clears the
-        // flag every tick → open/abandon oscillation). Instead blacklist this slot and back out so
-        // pickPartyTarget moves to the NEXT eligible mon. cursor here is the open mon's party slot.
+      // The open slot's menu offers no usable action. TWO very different situations land here:
+      //
+      //   (a) FORCED SWITCH on a slot the game won't send out. The game only offers SEND_OUT for
+      //       party slots NOT already on the field (updateOptions: cursor >= battlerCount), so the
+      //       on-field mon's menu lacks it. We must blacklist this slot and back out so
+      //       pickPartyTarget advances to the NEXT eligible (bench) mon — NOT abandon (a forced
+      //       switch can't be skipped; the SwitchPhase guard clears skipNextReward every tick, so
+      //       abandoning just re-opens the SAME slot forever → the "2:PARTY:SwitchPhase" wedge).
+      //
+      //   (b) A REWARD target that's simply unusable (e.g. a TM's TEACH-only menu) → abandon it.
+      //
+      // Detecting a forced switch via getCurrentPhaseName()==="SwitchPhase" alone proved unreliable
+      // in the live wedge (it didn't read "SwitchPhase" at this point, so we fell through to abandon
+      // and oscillated). Treat it as a forced switch if EITHER the phase reads SwitchPhase OR we're
+      // in a plain switch with a fainted mon forcing it (no reward apply/release context, and the
+      // party has a downed body — the only reason PARTY force-opens like this). A genuine TM reward
+      // sets neither: it has no fainted-forced context distinct from a real switch, so we lean on
+      // the fainted-mon signal to disambiguate.
+      const forcedSwitch =
+        getCurrentPhaseName() === "SwitchPhase" ||
+        (pendingApply === null && !releasingForSwap && s.playerParty.some((pp) => pp.fainted));
+      if (forcedSwitch) {
         if (typeof s.cursor === "number" && s.cursor >= 0) switchAvoidSlots.add(s.cursor);
         await press(Button.CANCEL, "party:switch-slot-illegal");
         return;
       }
-      // No clean action (e.g. a TM's TEACH-only menu) → abandon this reward.
+      // No clean action for a reward (e.g. a TM's TEACH-only menu) → abandon this reward.
       skipNextReward = true;
       await press(Button.CANCEL, "party:abandon-options");
       return;
@@ -619,6 +635,14 @@ async function handleLearnMove(s: GameSnapshot): Promise<void> {
   }
   // Default to a safe decline until we can read a decision (never accept on a blind guess).
   const decision = learnDecision ?? { learn: false, replaceIndex: -1 };
+
+  // We are NOT on the SUMMARY move-picker. Drop any tracked moveCursor so the NEXT time we enter
+  // SUMMARY we re-seed at 4 (the game's showMoveSelect always resets the highlight to 4 on entry).
+  // Without this, a stale counter from an earlier learn-move interaction this run would be out of
+  // sync with the on-screen cursor and our shortest-wrap stepping could never land on the target —
+  // re-wedging on DOWN/UP spam (the "SUMMARY:LearnMovePhase" stall). The cap still backstops it,
+  // but keeping the counter honest avoids 24 wasted ticks every time.
+  if (s.uiMode !== "SUMMARY") learnMoveCursor = null;
 
   switch (s.uiMode) {
     case "CONFIRM": {

@@ -334,6 +334,33 @@ describe("LearnMovePhase flow", () => {
     expect(downs).toBeLessThanOrEqual(3);
   });
 
+  it("re-seeds the SUMMARY moveCursor on re-entry so a stale counter can't wedge DOWN/UP forever", async () => {
+    // The "SUMMARY:LearnMovePhase" wedge: the tracked learnMoveCursor is module state. If we step it
+    // partway during one SUMMARY visit and then LEAVE the summary (a MESSAGE/CONFIRM tick), the game
+    // resets the on-screen highlight to 4 — but a stale counter would be out of sync, so our
+    // shortest-wrap stepping could never land on the target and we'd spam DOWN/UP. The fix drops the
+    // counter on any non-SUMMARY tick so the NEXT SUMMARY re-seeds at 4.
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = acceptCandidate(); // target is a forget slot reached via navigation
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 })); // ACTION → enter SUMMARY
+    rec.presses = [];
+    // Take ONE SUMMARY step (advances the tracked counter off its 4 seed), then bounce out to a
+    // MESSAGE tick (which the fix uses to reset the counter), then come back to SUMMARY.
+    await step(snap({ uiMode: "SUMMARY", cursor: 2 }));
+    await step(snap({ uiMode: "MESSAGE", cursor: 0 })); // leaves SUMMARY → counter must reset
+    rec.presses = [];
+    // Fresh SUMMARY: with the counter honestly re-seeded at 4, it lands within a few steps (never
+    // an unbounded spin), then ACTION-confirms the forget slot.
+    for (let i = 0; i < 8; i++) {
+      await step(snap({ uiMode: "SUMMARY", cursor: 2 }));
+      if (rec.presses.at(-1)?.startsWith("5:learn:forget-slot")) break;
+    }
+    expect(rec.presses.at(-1)).toMatch(/^5:learn:forget-slot[123]$/);
+    // No unbounded nav: a couple of steps at most before it lands.
+    const navs = rec.presses.filter((q) => q.startsWith("1:learn:slot-down") || q.startsWith("0:learn:slot-up")).length;
+    expect(navs).toBeLessThanOrEqual(3);
+  });
+
   it("waits for the CONFIRM handler to initialize (null cursor) before deciding", async () => {
     phaseRef.current = "LearnMovePhase";
     learnRef.current = acceptCandidate();
@@ -477,6 +504,23 @@ describe("PARTY option targeting (the previously-buggy path)", () => {
     expect(reachedSendOut).toBe(true);
     // Slot 0 must only be abandoned ONCE (it gets blacklisted), never spammed.
     expect(abandonOnSlot0).toBeLessThanOrEqual(1);
+  });
+
+  it("forced switch is detected by the FAINTED-mon signal even when the phase name doesn't read SwitchPhase", async () => {
+    // The exact live "2:PARTY:SwitchPhase" wedge (pv:1): a mon faints → PARTY force-opens, but
+    // getCurrentPhaseName() did NOT read "SwitchPhase" at the no-SEND_OUT decision point, so the
+    // old phase-name-only gate fell through to abandon → re-opened the on-field slot forever
+    // (open-options ↔ abandon-options). The fix also treats "no reward context + a fainted body" as
+    // a forced switch, so the on-field slot gets blacklisted and we advance to the bench mon.
+    phaseRef.current = "MoveEndPhase"; // NOT "SwitchPhase" — the unreliable read from the live wedge
+    // Slot 0 fainted (forced the switch), slot 1 on-field (no SEND_OUT), slot 2 bench (sendable).
+    const party = [p({ fainted: true, hpRatio: 0 }), p({ hpRatio: 1, onField: true }), p({ hpRatio: 0.9 })];
+
+    // Open the option menu on slot 1 (the other on-field mon): no SEND_OUT offered.
+    hRef.current = { optionsMode: true, options: [6, -1], optionsCursor: 0 }; // [SUMMARY, CANCEL]
+    await step(snap({ uiMode: "PARTY", cursor: 1, playerParty: party }));
+    // Must blacklist + back out (switch-slot-illegal), NOT abandon-options (which would oscillate).
+    expect(rec.presses).toEqual(["6:party:switch-slot-illegal"]);
   });
 });
 
