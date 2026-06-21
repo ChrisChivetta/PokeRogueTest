@@ -295,11 +295,13 @@ function readShopHeals(h: any): ShopHeal[] {
     if (!Array.isArray(row)) return;
     row.forEach((opt: any, ci: number) => {
       const mto = opt?.modifierTypeOption;
-      const kind = applyKind(typeof mto?.type?.id === "string" ? mto.type.id : null);
+      const id = typeof mto?.type?.id === "string" ? mto.type.id : null;
+      const kind = applyKind(id);
       const cost = Number(mto?.cost);
       if (!kind || !Number.isFinite(cost) || cost <= 0) return;
       // shopOptionsRows is bottom-anchored: rowCursor = options(2..len+1) = at(-(rowCursor-1)).
-      out.push({ kind, cost, rowCursor: rows.length - ri + 1, cursorIndex: ci });
+      // id is carried so planShopBuy can rank by heal POTENCY when a mon is critically hurt.
+      out.push({ kind, id, cost, rowCursor: rows.length - ri + 1, cursorIndex: ci });
     });
   });
   return out;

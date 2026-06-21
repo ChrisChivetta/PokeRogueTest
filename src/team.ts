@@ -17,6 +17,13 @@ export interface StarterInfo {
   ribboned: boolean;
   /** Carry priority: null = not a viable carry; otherwise lower = stronger pick. */
   carryRank: number | null;
+  /**
+   * The species' base type name(s), lowercased (e.g. ["fire"], ["grass","poison"]). Used to
+   * DIVERSIFY the bench so the team isn't three of the same type (the carry is the only mon that
+   * fights, but a same-type bench gives no coverage when it faints and a passenger must lead).
+   * Defaults to [] when unreadable — selection then degrades gracefully to pure cheapest-first.
+   */
+  types?: string[];
 }
 
 export interface TeamPlan {
@@ -59,6 +66,28 @@ function byCheapest(a: StarterInfo, b: StarterInfo): number {
   return a.cost - b.cost || (a.carryRank ?? 99) - (b.carryRank ?? 99) || a.speciesId - b.speciesId;
 }
 
+/** Lowercased base types of a starter (empty if unread). */
+const typesOf = (s: StarterInfo): string[] => s.types ?? [];
+
+/** True if `s` shares a type with anyone already on `team` — i.e. it adds no new coverage. */
+function sharesTypeWith(s: StarterInfo, team: StarterInfo[]): boolean {
+  const have = new Set(team.flatMap(typesOf));
+  return typesOf(s).some((t) => have.has(t));
+}
+
+/**
+ * From the cheapest tranche of `candidates`, pick the one that best DIVERSIFIES the team's types
+ * (prefers a body sharing no type with the current team), tie-broken by the normal cheapest order.
+ * PURE. `candidates` must already be byCheapest-sorted. Returns undefined if none are eligible.
+ * Only looks within the cheapest cost bucket so diversity never overrides the budget-packing goal.
+ */
+function pickDiverse(candidates: StarterInfo[], team: StarterInfo[]): StarterInfo | undefined {
+  if (!candidates.length) return undefined;
+  const minCost = candidates[0].cost;
+  const tranche = candidates.filter((s) => s.cost <= minCost + 1e-9);
+  return tranche.find((s) => !sharesTypeWith(s, team)) ?? tranche[0];
+}
+
 /**
  * Choose the team. Greedy and optimal for the objective "maximise un-ribboned bodies under
  * budget": a strong carry first, then cheapest un-ribboned passengers (cheapest-first packs the
@@ -82,23 +111,29 @@ export function selectTeam(owned: StarterInfo[], options: Partial<TeamOptions> =
   const fits = (s: StarterInfo) => spent + s.cost <= opts.budget + 1e-9 && team.length < opts.teamSize;
 
   const rest = owned.filter((s) => s.speciesId !== carry.speciesId).sort(byCheapest);
+  const chosen = new Set<number>();
 
-  // 1) cheapest un-ribboned passengers (the ribbon-earning slots)
-  for (const s of rest) {
-    if (!s.ribboned && fits(s)) {
-      team.push(s);
-      spent += s.cost;
+  // Greedily fill from a pool: each step take the cheapest body that fits, breaking cost-ties toward
+  // TYPE DIVERSITY (pickDiverse) so the bench isn't three of the same type. Picking from the cheapest
+  // tranche keeps the budget-packing ("most bodies per budget") behaviour identical when types tie or
+  // are unread — it only reorders equal-cost candidates. Re-evaluates after each pick so "diverse"
+  // is measured against the team built so far.
+  const fillFrom = (pool: StarterInfo[]): void => {
+    let avail = pool.filter((s) => !chosen.has(s.speciesId) && fits(s));
+    while (avail.length) {
+      const pick = pickDiverse(avail, team);
+      if (!pick) break;
+      team.push(pick);
+      spent += pick.cost;
+      chosen.add(pick.speciesId);
+      avail = pool.filter((s) => !chosen.has(s.speciesId) && fits(s));
     }
-  }
-  // 2) optional filler: cheapest remaining bodies for a more resilient run (no ribbon gain)
-  if (opts.fillWithRibboned) {
-    for (const s of rest) {
-      if (!team.includes(s) && fits(s)) {
-        team.push(s);
-        spent += s.cost;
-      }
-    }
-  }
+  };
+
+  // 1) un-ribboned passengers (the ribbon-earning slots), cheapest-first with diversity tie-break
+  fillFrom(rest.filter((s) => !s.ribboned));
+  // 2) optional filler: remaining bodies for a more resilient run (no ribbon gain)
+  if (opts.fillWithRibboned) fillFrom(rest);
 
   const passengers = team.slice(1);
   return {

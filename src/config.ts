@@ -97,7 +97,7 @@ export const config: Config = {
   catchUnribboned: true,
   swapWhenPartyFull: true,
   buyHealsWithMoney: true,
-  healHpThreshold: 0.5,
+  healHpThreshold: 0.66, // top up any mon below 2/3 HP (was 0.5 — too timid; we wiped at the wave-8 trainer)
   applyGameSettings: true,
   catchAttemptsPerTarget: 3,
   softenBeforeCatch: true,

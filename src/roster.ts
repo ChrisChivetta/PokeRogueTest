@@ -5,13 +5,39 @@
 // thrown. Selectable starters are exactly the keys of gameData.starterData that are owned
 // (dexData[id].caughtAttr set).
 
-import { getScene } from "./bridge";
+import { getScene, typeName } from "./bridge";
 import { CARRY_RANK, type StarterInfo } from "./team";
 import type { CandyStarter } from "./candy";
 import type { CatchContext, PartyMon } from "./catch";
 
 /** RibbonData.CLASSIC (src/system/ribbons/ribbon-data.ts) — the bit a Classic clear awards. */
 export const CLASSIC_RIBBON = 0x0008000000n;
+
+/**
+ * Read a starter species' base type name(s) defensively, lowercased (e.g. ["fire"],
+ * ["grass","poison"]). Used to diversify the bench (team.ts). PokemonSpecies carries type1 +
+ * (nullable) type2. We resolve the species via the scene's getPokemonSpecies if present, else the
+ * global allSpecies table; either lookup is version-fragile, so any failure yields [] (selection
+ * then degrades to pure cheapest-first). NEVER throws.
+ */
+function readSpeciesTypes(scene: any, speciesId: number): string[] {
+  try {
+    const sp =
+      typeof scene?.getPokemonSpecies === "function"
+        ? scene.getPokemonSpecies(speciesId)
+        : (globalThis as any).allSpecies?.[speciesId] ??
+          (globalThis as any).allSpecies?.find?.((s: any) => s?.speciesId === speciesId);
+    if (!sp) return [];
+    const out: string[] = [];
+    const t1 = typeName(sp.type1);
+    if (t1 && t1 !== "unknown") out.push(t1);
+    const t2 = sp.type2 != null ? typeName(sp.type2) : null;
+    if (t2 && t2 !== "unknown" && t2 !== t1) out.push(t2);
+    return out;
+  } catch {
+    return [];
+  }
+}
 
 /** Read a dex entry's ribbon bitmask defensively (RibbonData exposes getRibbons()). */
 function readRibbons(dex: any): bigint {
@@ -29,7 +55,8 @@ function readRibbons(dex: any): bigint {
 
 /** Snapshot the owned starter roster from gameData. Empty if the scene isn't ready. */
 export function readRoster(): StarterInfo[] {
-  const gd: any = getScene()?.gameData;
+  const scene: any = getScene();
+  const gd: any = scene?.gameData;
   if (!gd || !gd.dexData || !gd.starterData || typeof gd.getSpeciesStarterValue !== "function") {
     return [];
   }
@@ -54,6 +81,7 @@ export function readRoster(): StarterInfo[] {
       cost,
       ribboned: (readRibbons(dex) & CLASSIC_RIBBON) !== 0n,
       carryRank: CARRY_RANK[speciesId] ?? null,
+      types: readSpeciesTypes(scene, speciesId), // [] if unreadable → diversity is a no-op
     });
   }
   return out;

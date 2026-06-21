@@ -1,8 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { selectTeam, CARRY_RANK, type StarterInfo } from "../src/team";
 
-const mk = (speciesId: number, cost: number, ribboned = false, carryRank: number | null = null): StarterInfo =>
-  ({ speciesId, cost, ribboned, carryRank });
+const mk = (
+  speciesId: number,
+  cost: number,
+  ribboned = false,
+  carryRank: number | null = null,
+  types: string[] = [],
+): StarterInfo => ({ speciesId, cost, ribboned, carryRank, types });
 
 const ids = (p: { team: StarterInfo[] }) => p.team.map((s) => s.speciesId);
 
@@ -80,5 +85,47 @@ describe("selectTeam", () => {
   it("exposes the documented carry shortlist", () => {
     expect(CARRY_RANK[909]).toBe(0); // Fuecoco is the top pick
     expect(Object.keys(CARRY_RANK).length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("breaks equal-cost passenger ties toward type DIVERSITY", () => {
+    // Carry is fire; among equal-cost passengers, prefer a non-fire body for coverage.
+    const roster = [
+      mk(909, 4, false, 0, ["fire"]), // carry: fire
+      mk(10, 1, false, null, ["fire"]), // same type as carry
+      mk(11, 1, false, null, ["water"]), // diversifies → should be picked first
+      mk(12, 1, false, null, ["fire"]),
+    ];
+    const p = selectTeam(roster, { fillWithRibboned: false });
+    expect(p.passengers[0].speciesId).toBe(11); // water chosen ahead of the fire bodies
+  });
+
+  it("re-measures diversity against the team built so far (no two-of-a-kind when avoidable)", () => {
+    const roster = [
+      mk(909, 4, false, 0, ["fire"]),
+      mk(10, 1, false, null, ["water"]),
+      mk(11, 1, false, null, ["grass"]),
+      mk(12, 1, false, null, ["water"]),
+    ];
+    const p = selectTeam(roster, { fillWithRibboned: false });
+    // Both water + grass picked, but the second pick prefers the not-yet-present type.
+    const types = p.passengers.flatMap((s) => s.types ?? []);
+    expect(new Set(types)).toEqual(new Set(["water", "grass"]));
+  });
+
+  it("never lets diversity override the budget-packing (still fills the cheapest tranche)", () => {
+    const roster = [
+      mk(909, 4, false, 0, ["fire"]),
+      mk(10, 1, false, null, ["fire"]),
+      mk(11, 1, false, null, ["fire"]),
+      mk(12, 1, false, null, ["fire"]),
+    ];
+    const p = selectTeam(roster, { fillWithRibboned: false });
+    expect(p.team.length).toBe(4); // all same-type, but still packed to budget
+  });
+
+  it("degrades to cheapest-first when types are unread (empty)", () => {
+    const roster = [mk(909, 4, false, 0), mk(10, 1), mk(11, 1), mk(12, 1)];
+    const p = selectTeam(roster, { fillWithRibboned: false });
+    expect(p.team.length).toBe(4);
   });
 });

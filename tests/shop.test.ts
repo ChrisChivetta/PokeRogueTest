@@ -51,4 +51,41 @@ describe("planShopBuy", () => {
     config.buyHealsWithMoney = false;
     expect(planShopBuy([mon({ fainted: true })], 999, [heal({ kind: "revive" })])).toBeNull();
   });
+
+  it("buys the STRONGEST affordable heal when a mon is critically hurt (< 0.33)", () => {
+    // A single POTION barely dents a deeply-hurt carry, so step up to the strongest affordable.
+    const shelf = [
+      heal({ id: "POTION", cost: 50 }),
+      heal({ id: "HYPER_POTION", cost: 100, cursorIndex: 1 }),
+      heal({ id: "FULL_RESTORE", cost: 200, cursorIndex: 2 }),
+    ];
+    const r = planShopBuy([mon({ hpRatio: 0.2 })], 999, shelf);
+    expect(r?.id).toBe("FULL_RESTORE");
+  });
+
+  it("steps up only as far as money allows when critically hurt", () => {
+    const shelf = [
+      heal({ id: "POTION", cost: 50 }),
+      heal({ id: "HYPER_POTION", cost: 100, cursorIndex: 1 }),
+      heal({ id: "FULL_RESTORE", cost: 200, cursorIndex: 2 }),
+    ];
+    const r = planShopBuy([mon({ hpRatio: 0.2 })], 120, shelf); // can't afford FULL_RESTORE
+    expect(r?.id).toBe("HYPER_POTION");
+  });
+
+  it("buys the CHEAPEST heal for a light top-up (hurt but not critical)", () => {
+    config.healHpThreshold = 0.66;
+    const shelf = [
+      heal({ id: "POTION", cost: 50 }),
+      heal({ id: "FULL_RESTORE", cost: 200, cursorIndex: 1 }),
+    ];
+    const r = planShopBuy([mon({ hpRatio: 0.5 })], 999, shelf); // below 0.66 but above 0.33
+    expect(r?.id).toBe("POTION");
+  });
+
+  it("still revives first even when another mon is critically hurt", () => {
+    const shelf = [heal({ kind: "revive", id: "REVIVE", cost: 300 }), heal({ id: "FULL_RESTORE", cost: 200, cursorIndex: 1 })];
+    const r = planShopBuy([mon({ fainted: true }), mon({ hpRatio: 0.1 })], 999, shelf);
+    expect(r?.kind).toBe("revive");
+  });
 });
