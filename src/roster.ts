@@ -156,6 +156,10 @@ export function readCatchContext(): CatchContext | null {
     }
   };
   const ribbonedOf = (id: number): boolean => (readRibbons(gd.dexData[id]) & CLASSIC_RIBBON) !== 0n;
+  const levelOf = (p: any): number | null => {
+    const lvl = p?.level;
+    return typeof lvl === "number" && Number.isFinite(lvl) ? lvl : null;
+  };
 
   const foe = (scene.getEnemyField?.() ?? []).find((p: any) => p?.isOnField?.()) ?? scene.getEnemyField?.()?.[0];
   const foeRoot = foe ? root(foe) : null;
@@ -169,10 +173,16 @@ export function readCatchContext(): CatchContext | null {
     if (id == null) continue;
     const cost = costOf(id);
     if (cost == null) continue;
-    party.push({ ribboned: ribbonedOf(id), cost, isCarry: id in CARRY_RANK });
+    party.push({ ribboned: ribbonedOf(id), cost, isCarry: id in CARRY_RANK, level: levelOf(p) });
   }
 
-  return { caught: !!gd.dexData[foeRoot]?.caughtAttr, ribboned: ribbonedOf(foeRoot), cost: foeCost, party };
+  return {
+    caught: !!gd.dexData[foeRoot]?.caughtAttr,
+    ribboned: ribbonedOf(foeRoot),
+    cost: foeCost,
+    foeLevel: levelOf(foe),
+    party,
+  };
 }
 
 /**
@@ -207,7 +217,8 @@ export function readPartyValue(): PartyMon[] {
       /* version drift */
     }
     if (cost == null) continue;
-    out.push({ ribboned: (readRibbons(gd.dexData[id]) & CLASSIC_RIBBON) !== 0n, cost, isCarry: id in CARRY_RANK });
+    const lvl = typeof p?.level === "number" && Number.isFinite(p.level) ? p.level : null;
+    out.push({ ribboned: (readRibbons(gd.dexData[id]) & CLASSIC_RIBBON) !== 0n, cost, isCarry: id in CARRY_RANK, level: lvl });
   }
   return out;
 }

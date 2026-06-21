@@ -147,9 +147,9 @@ describe("shouldSoftenBeforeCatch — lower HP before throwing", () => {
 
 describe("worthCatching — catch-for-ribbons value", () => {
   const ctx = (o: Partial<CatchContext> = {}): CatchContext =>
-    ({ caught: false, ribboned: false, cost: 5, party: [], ...o });
+    ({ caught: false, ribboned: false, cost: 5, foeLevel: null, party: [], ...o });
   const member = (o: Partial<CatchContext["party"][number]> = {}) =>
-    ({ ribboned: false, cost: 3, isCarry: false, ...o });
+    ({ ribboned: false, cost: 3, isCarry: false, level: null, ...o });
   // Pad a list of "interesting" members out to a FULL party (6) with already-ribboned passengers
   // (which the swap logic always skips) so a test exercises the full-party swap branch.
   const full = (...members: ReturnType<typeof member>[]) => {
@@ -189,17 +189,49 @@ describe("worthCatching — catch-for-ribbons value", () => {
   it("caught but full party of non-swappable members → not worth a ball", () => {
     expect(worthCatching(ctx({ caught: true, cost: 6, party: full() }))).toBe(false);
   });
+
+  // ── Strength-aware (LEVEL) swap: build stronger teams, not catch-for-catch ──────────────────
+  it("catches a HIGHER-level wild over a weaker replaceable member (full party)", () => {
+    // Even though it's CHEAPER, the wild out-levels our weakest passenger → worth swapping up.
+    const r = worthCatching(ctx({ caught: true, cost: 1, foeLevel: 30, party: full(member({ cost: 9, level: 10 })) }));
+    expect(r).toBe(true);
+  });
+
+  it("won't swap when the wild is NOT stronger than any replaceable member (full party)", () => {
+    // The wild is pricier but no higher-level than our bench → catching would only churn the team.
+    const r = worthCatching(ctx({ caught: true, cost: 9, foeLevel: 10, party: full(member({ cost: 1, level: 20 })) }));
+    expect(r).toBe(false);
+  });
+
+  it("ignores cost once levels are known (level dominates the full-party swap)", () => {
+    const r = worthCatching(ctx({ caught: true, cost: 9, foeLevel: 15, party: full(member({ cost: 1, level: 15 })) }));
+    expect(r).toBe(false); // equal level → not STRONGER → don't swap
+  });
+
+  it("falls back to the legacy cost bar when levels are unreadable (foeLevel null)", () => {
+    const r = worthCatching(ctx({ caught: true, cost: 6, foeLevel: null, party: full(member({ cost: 3, level: 99 })) }));
+    expect(r).toBe(true); // no foe level → out-costs a replaceable member → legacy yes
+  });
 });
 
 describe("pickReleaseSlot — which passenger to give up (Part B)", () => {
-  const pm = (o: any = {}) => ({ ribboned: false, cost: 3, isCarry: false, ...o });
-  it("releases the cheapest un-ribboned non-carry passenger", () => {
-    expect(pickReleaseSlot([pm({ cost: 5 }), pm({ cost: 2 }), pm({ cost: 4 })])).toBe(1);
+  const pm = (o: any = {}) => ({ ribboned: false, cost: 3, isCarry: false, level: null, ...o });
+  it("releases the WEAKEST (lowest-level) un-ribboned non-carry passenger", () => {
+    expect(pickReleaseSlot([pm({ level: 20 }), pm({ level: 5 }), pm({ level: 12 })])).toBe(1);
+  });
+  it("breaks level ties by cheapest cost", () => {
+    expect(pickReleaseSlot([pm({ level: 10, cost: 5 }), pm({ level: 10, cost: 2 }), pm({ level: 10, cost: 4 })])).toBe(1);
   });
   it("never releases the carry or an already-ribboned mon", () => {
-    expect(pickReleaseSlot([pm({ cost: 2, isCarry: true }), pm({ cost: 3, ribboned: true }), pm({ cost: 9 })])).toBe(2);
+    expect(pickReleaseSlot([pm({ level: 1, isCarry: true }), pm({ level: 1, ribboned: true }), pm({ level: 50 })])).toBe(2);
+  });
+  it("keeps a known-strong mon over an unknown-level one (null sorts last)", () => {
+    expect(pickReleaseSlot([pm({ level: null }), pm({ level: 40 })])).toBe(1);
+  });
+  it("degrades to cheapest-first when no levels are readable", () => {
+    expect(pickReleaseSlot([pm({ cost: 5 }), pm({ cost: 2 }), pm({ cost: 4 })])).toBe(1);
   });
   it("returns -1 when nothing is safe to release", () => {
-    expect(pickReleaseSlot([pm({ cost: 2, isCarry: true }), pm({ cost: 3, ribboned: true })])).toBe(-1);
+    expect(pickReleaseSlot([pm({ isCarry: true }), pm({ ribboned: true })])).toBe(-1);
   });
 });

@@ -158,6 +158,7 @@ export interface PartyMon {
   ribboned: boolean;
   cost: number;
   isCarry: boolean;
+  level: number | null; // strength proxy (PokeRogue has no CP); null when unreadable
 }
 
 /** The on-field wild + our party, by starter (root) species, for the catch-value decision. */
@@ -165,32 +166,55 @@ export interface CatchContext {
   caught: boolean; // is the wild's starter line already owned?
   ribboned: boolean; // does it already hold the Classic ribbon?
   cost: number; // its starter cost
+  foeLevel: number | null; // the wild's level (strength proxy); null when unreadable
   party: PartyMon[];
 }
+
+/** A replaceable passenger: un-ribboned and not the carry/sweeper (losing the carry loses the run). */
+const isReplaceable = (p: PartyMon): boolean => !p.ribboned && !p.isCarry;
 
 /**
  * Is this wild worth a ball for the ribbon objective? PURE. Uncaught → always (unlock + a future
  * ribbon). Already-ribboned → never. Caught-but-un-ribboned → grab it whenever there's open room
- * to keep it (more un-ribboned candidates on the team is strictly good early), or — when full — if
- * it out-costs a replaceable (un-ribboned, non-carry) member, i.e. worth swapping a passenger out.
+ * to keep it (more un-ribboned candidates on the team is strictly good early).
+ *
+ * When the party is FULL we only catch to BUILD A STRONGER TEAM — never to churn an equal/better
+ * mon for a worse one. The strength proxy is LEVEL (PokeRogue has no CP): catch only if the wild
+ * out-LEVELS some replaceable (un-ribboned, non-carry) member. If levels are unreadable on either
+ * side we fall back to the legacy cost comparison so behaviour never regresses below the old bar.
  */
 export function worthCatching(ctx: CatchContext): boolean {
   if (!ctx.caught) return true;
   if (ctx.ribboned) return false;
   if (ctx.party.length < 6) return true; // room to keep another un-ribboned ribbon candidate
-  return ctx.party.some((p) => !p.ribboned && !p.isCarry && p.cost < ctx.cost);
+
+  const replaceable = ctx.party.filter(isReplaceable);
+  if (replaceable.length === 0) return false; // nothing safe to swap → don't bother
+
+  // Strength-first: only swap when the wild is stronger than our weakest replaceable body.
+  if (ctx.foeLevel != null && replaceable.some((p) => p.level != null)) {
+    return replaceable.some((p) => p.level != null && p.level < ctx.foeLevel!);
+  }
+  // Levels unreadable → legacy cost bar (catch only if it out-costs a replaceable member).
+  return replaceable.some((p) => p.cost < ctx.cost);
 }
 
 /**
- * When a catch fills the party, which slot to RELEASE to keep it (Part B)? PURE. The cheapest
- * un-ribboned, non-carry passenger — those are the easiest to re-ribbon later via the budget team,
- * so they're the right thing to give up for a pricier catch. -1 if there's nothing safe to release.
+ * When a catch fills the party, which slot to RELEASE to keep it (Part B)? PURE. We give up our
+ * WEAKEST replaceable (un-ribboned, non-carry) body — lowest LEVEL — so the team only ever trends
+ * stronger; cost breaks level ties (cheaper is easier to re-ribbon later via the budget team). When
+ * levels are unreadable we degrade to the legacy cheapest-first pick. -1 if nothing is safe to free.
  */
 export function pickReleaseSlot(party: PartyMon[]): number {
   let slot = -1;
-  let cheapest = Infinity;
+  let bestLevel = Infinity;
+  let bestCost = Infinity;
   party.forEach((p, i) => {
-    if (!p.ribboned && !p.isCarry && p.cost < cheapest) { cheapest = p.cost; slot = i; }
+    if (!isReplaceable(p)) return;
+    const lvl = p.level ?? Infinity; // unknown level sorts last (don't release a possibly-strong mon)
+    if (lvl < bestLevel || (lvl === bestLevel && p.cost < bestCost)) {
+      bestLevel = lvl; bestCost = p.cost; slot = i;
+    }
   });
   return slot;
 }
