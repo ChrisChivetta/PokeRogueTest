@@ -89,3 +89,43 @@ describe("planShopBuy", () => {
     expect(r?.kind).toBe("revive");
   });
 });
+
+describe("planShopBuy pre-rival prep", () => {
+  // Pre-rival: enter the deterministic scripted rival at FULL strength — revive every body, then
+  // heal ANYONE below 100% (not just below the normal threshold) with the STRONGEST affordable heal.
+
+  it("heals a mon that the NORMAL threshold would leave alone (just below full)", () => {
+    // 0.9 is above healHpThreshold (0.5) → normal mode buys nothing; pre-rival tops it off.
+    const shelf = [heal({ id: "POTION", cost: 50 })];
+    expect(planShopBuy([mon({ hpRatio: 0.9 })], 999, shelf, false)).toBeNull();
+    expect(planShopBuy([mon({ hpRatio: 0.9 })], 999, shelf, true)?.kind).toBe("heal");
+  });
+
+  it("buys the STRONGEST affordable heal even for a light top-off", () => {
+    const shelf = [
+      heal({ id: "POTION", cost: 50 }),
+      heal({ id: "HYPER_POTION", cost: 100, cursorIndex: 1 }),
+      heal({ id: "FULL_RESTORE", cost: 200, cursorIndex: 2 }),
+    ];
+    // Only lightly hurt (0.8), but pre-rival still steps up to the strongest it can afford.
+    expect(planShopBuy([mon({ hpRatio: 0.8 })], 999, shelf, true)?.id).toBe("FULL_RESTORE");
+  });
+
+  it("still revives fainted bodies before topping up", () => {
+    const shelf = [heal({ kind: "revive", id: "REVIVE", cost: 300 }), heal({ id: "FULL_RESTORE", cost: 200, cursorIndex: 1 })];
+    const r = planShopBuy([mon({ fainted: true }), mon({ hpRatio: 0.9 })], 999, shelf, true);
+    expect(r?.kind).toBe("revive");
+  });
+
+  it("is still money-bounded (steps down to the affordable heal)", () => {
+    const shelf = [
+      heal({ id: "POTION", cost: 50 }),
+      heal({ id: "FULL_RESTORE", cost: 200, cursorIndex: 1 }),
+    ];
+    expect(planShopBuy([mon({ hpRatio: 0.9 })], 120, shelf, true)?.id).toBe("POTION");
+  });
+
+  it("buys nothing when the party is already at full HP", () => {
+    expect(planShopBuy([mon({ hpRatio: 1 })], 999, [heal()], true)).toBeNull();
+  });
+});

@@ -62,7 +62,12 @@ export interface BattleSnapshot {
   isBossWave: boolean;
   /** True if a trainer object is present (trainer battle). */
   isTrainer: boolean;
+  /** True on a deterministic RIVAL wave (8/25/55/95/145/195) — heal to full before these. */
+  isRivalWave: boolean;
 }
+
+/** Deterministic Classic rival waves (ClassicFixedBossWaves: RIVAL_1..RIVAL_6). Heal to full first. */
+export const RIVAL_WAVES: ReadonlySet<number> = new Set([8, 25, 55, 95, 145, 195]);
 
 export interface GameSnapshot {
   ready: boolean;
@@ -252,6 +257,7 @@ function readBattle(scene: RawScene): BattleSnapshot | null {
     battleType: num(b?.battleType),
     isBossWave: waveIndex != null && waveIndex % 10 === 0,
     isTrainer: !!b?.trainer,
+    isRivalWave: waveIndex != null && RIVAL_WAVES.has(waveIndex),
   };
 }
 

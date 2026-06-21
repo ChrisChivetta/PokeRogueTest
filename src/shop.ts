@@ -56,26 +56,47 @@ export interface ShopHeal {
  * the STRONGEST affordable heal (a single Potion barely dents a deeply-hurt high-HP carry, wasting
  * the turn); otherwise the cheapest affordable heal is fine for a light top-up. Revives always take
  * the cheapest affordable option (a revive's job is just to bring the body back).
+ *
+ * PRE-RIVAL prep (`preRival`): the next fight is a deterministic, scripted rival (waves
+ * 8/25/55/95/145/195). Those are unforgiving, so we bank money to enter at FULL strength — revive
+ * every fainted body, then heal ANY mon below 100% (not just below the normal threshold), and always
+ * buy the STRONGEST affordable heal so a single top-up actually closes the gap. Still one-at-a-time
+ * and still money-bounded.
  */
-export function planShopBuy(party: GameSnapshot["playerParty"], money: number, heals: ShopHeal[]): ShopHeal | null {
+export function planShopBuy(
+  party: GameSnapshot["playerParty"],
+  money: number,
+  heals: ShopHeal[],
+  preRival = false,
+): ShopHeal | null {
   if (!config.buyHealsWithMoney) return null;
   const affordable = (kind: "revive" | "heal") => heals.filter((h) => h.kind === kind && h.cost <= money);
   const cheapest = (kind: "revive" | "heal"): ShopHeal | null =>
     affordable(kind).sort((a, b) => a.cost - b.cost)[0] ?? null;
+  const strongest = (kind: "revive" | "heal"): ShopHeal | null =>
+    affordable(kind).sort((a, b) => potency(b) - potency(a) || a.cost - b.cost)[0] ?? null;
   const potency = (h: ShopHeal) => HEAL_POTENCY[h.id ?? ""] ?? 0;
 
   if (party.some((p) => p.fainted)) {
     const revive = cheapest("revive");
     if (revive) return revive;
   }
-  if (party.some((p) => !p.fainted && (p.hpRatio ?? 1) < config.healHpThreshold)) {
-    const critical = party.some((p) => !p.fainted && (p.hpRatio ?? 1) < CRITICAL_HP_FRACTION);
-    const heals2 = affordable("heal");
-    if (heals2.length) {
-      // Critically hurt → strongest affordable (potency, then cheaper as a tie-break). Otherwise cheapest.
-      return critical
-        ? heals2.sort((a, b) => potency(b) - potency(a) || a.cost - b.cost)[0]
-        : heals2.sort((a, b) => a.cost - b.cost)[0];
+
+  // Pre-rival: heal anyone NOT at full to the strongest affordable heal (full-party top-off).
+  const hpFloor = preRival ? 1 : config.healHpThreshold;
+  if (party.some((p) => !p.fainted && (p.hpRatio ?? 1) < hpFloor)) {
+    if (preRival) {
+      const s = strongest("heal");
+      if (s) return s;
+    } else {
+      const critical = party.some((p) => !p.fainted && (p.hpRatio ?? 1) < CRITICAL_HP_FRACTION);
+      const heals2 = affordable("heal");
+      if (heals2.length) {
+        // Critically hurt → strongest affordable (potency, then cheaper as a tie-break). Otherwise cheapest.
+        return critical
+          ? heals2.sort((a, b) => potency(b) - potency(a) || a.cost - b.cost)[0]
+          : heals2.sort((a, b) => a.cost - b.cost)[0];
+      }
     }
   }
   return null;

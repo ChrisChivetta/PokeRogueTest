@@ -401,8 +401,12 @@ async function handleReward(s: GameSnapshot): Promise<void> {
 
   // Spend money on heals FIRST (survive deeper): revive fainted mons, then top up hurt ones.
   // Buying a heal opens the PARTY target screen, handled like a free-reward apply (pendingApply).
-  if (shopBuys < MAX_SHOP_BUYS) {
-    const buy = planShopBuy(s.playerParty, s.money ?? 0, readShopHeals(h));
+  // PRE-RIVAL: the next fight is a deterministic, unforgiving scripted rival (waves 8/25/55/95/
+  // 145/195) — enter at FULL strength. We force a full revive+heal-to-100% (preRival mode) and
+  // lift the normal per-screen buy cap so banking money on heals isn't truncated mid-prep.
+  const preRival = s.battle?.isRivalWave ?? false;
+  if (preRival || shopBuys < MAX_SHOP_BUYS) {
+    const buy = planShopBuy(s.playerParty, s.money ?? 0, readShopHeals(h), preRival);
     if (buy) {
       const row = typeof h?.rowCursor === "number" ? h.rowCursor : 1;
       if (row !== buy.rowCursor) { await press(row < buy.rowCursor ? Button.UP : Button.DOWN, "shop:to-row"); return; }
