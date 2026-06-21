@@ -98,6 +98,42 @@ describe("policy routing", () => {
     expect(rec.presses).toEqual(["nav:1->0", "5:command:fight-soften"]); // 0 = FIGHT (soften)
   });
 
+  // FIGHT anti-wedge: a move that ranking thinks is usable but the game keeps REJECTING (disabled /
+  // out-of-PP that isUsable() mis-read) must not pin us forever re-selecting it. After a couple of
+  // same-index presses with no turn progress we rotate to the next-ranked move (worst case slot 0).
+  const fightLead = (o: any = {}) =>
+    p({ onField: true, types: ["normal"],
+        moves: [
+          { index: 0, power: 100, type: "normal", accuracy: 100, pp: 10, usable: true },
+          { index: 1, power: 50, type: "normal", accuracy: 100, pp: 10, usable: true },
+        ], ...o });
+  const fightSnap = () => snap({ uiMode: "FIGHT", cursor: 0, playerParty: [fightLead()], enemyParty: [p({ onField: true, types: ["normal"] })] });
+
+  it("FIGHT picks the best-ranked move (move 0) on the first press", async () => {
+    await step(fightSnap());
+    expect(rec.presses).toEqual(["5:fight:move0"]);
+  });
+
+  it("FIGHT rotates off a move the game keeps rejecting (anti-wedge)", async () => {
+    // Press the same best move twice (it's secretly disabled, so the turn never advances)…
+    await step(fightSnap());
+    await step(fightSnap());
+    rec.presses = [];
+    // …on the 3rd consecutive press it must SKIP to the next-ranked move (idx 1).
+    await step(fightSnap());
+    expect(rec.presses).toEqual(["nav:0->1", "5:fight:move1(skip1)"]);
+  });
+
+  it("FIGHT forgets the reject streak once the turn advances (a COMMAND tick resets it)", async () => {
+    await step(fightSnap());
+    await step(fightSnap());
+    await step(fightSnap()); // now rotated off move 0
+    await step(snap({ uiMode: "COMMAND", cursor: 0 })); // turn resolved → new turn
+    rec.presses = [];
+    await step(fightSnap()); // fresh turn → back to the best move, no skip
+    expect(rec.presses).toEqual(["5:fight:move0"]);
+  });
+
   it("EVOLUTION_SCENE WAITS (no press) while the animation plays — never masks", async () => {
     // Passive animation scene. The handler only accepts ACTION at the trailing prompt; mashing it
     // mid-animation races the phase system into a permanent wedge. So with no prompt we sit still.

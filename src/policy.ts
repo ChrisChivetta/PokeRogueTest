@@ -56,6 +56,7 @@ export async function step(s: GameSnapshot): Promise<void> {
       pendingApply = null; // a new turn began; any reward-apply is finished
       shopBuys = 0; // fresh shop budget next reward screen
       releasingForSwap = false; releaseSlot = -1;
+      fightLastIdx = -1; fightRepeat = 0; // turn advanced → forget the previous move's reject streak
       // Wait for the handler to initialize (cursor becomes non-null).
       if (s.cursor == null) return;
       const cur = s.cursor;
@@ -99,10 +100,18 @@ export async function step(s: GameSnapshot): Promise<void> {
       // don't replay the exact line that just lost. Out of PP on everything → first slot (Struggle).
       const ranked = rankedMoves(lead, onField(s.enemyParty));
       const gen = retryGeneration();
-      const idx = ranked.length ? ranked[gen % ranked.length] : (lead?.moves[0]?.index ?? 0);
+      // Anti-wedge: if we've pressed the SAME index FIGHT_REJECT_LIMIT+ ticks running and the turn
+      // hasn't advanced, that move is being REJECTED (disabled/0-PP that ranking missed). Step past
+      // it in the ranked list by however many rejections we've racked up, wrapping around; the worst
+      // case lands on slot 0 / Struggle, which is always selectable, so we can never stay pinned.
+      const skip = fightRepeat >= FIGHT_REJECT_LIMIT ? fightRepeat - FIGHT_REJECT_LIMIT + 1 : 0;
+      const idx = ranked.length ? ranked[(gen + skip) % ranked.length] : (lead?.moves[0]?.index ?? 0);
+      // Track consecutive presses of the same index (reset when the chosen move changes).
+      if (idx === fightLastIdx) fightRepeat++;
+      else { fightLastIdx = idx; fightRepeat = 1; }
       const cur = s.cursor;
       if (cur !== idx) await moveCursor2x2(cur, idx);
-      await press(Button.ACTION, `fight:move${idx}`);
+      await press(Button.ACTION, `fight:move${idx}${skip ? `(skip${skip})` : ""}`);
       return;
     }
 
@@ -235,6 +244,20 @@ let releaseSlot = -1;
 // remember that slot here, back out, and pickPartyTarget skips it so we try the NEXT eligible mon.
 let switchAvoidSlots = new Set<number>();
 
+// ── FIGHT-menu anti-wedge ────────────────────────────────────────────────────
+// We pick the best-ranked move and press ACTION. If that move is actually UN-selectable right now
+// (disabled by the foe, out of PP, Taunt/Torment, a charge move mid-charge), the game REJECTS the
+// press: it pops a brief "can't use that" MESSAGE and bounces straight back to the FIGHT menu on
+// the SAME CommandPhase — so we re-pick the SAME index and loop forever (the FIGHT↔MESSAGE wedge
+// seen in soak telemetry). rankedMoves() tries to drop un-pickable moves via isUsable(), but that
+// read DEFAULTS TO USABLE on any failure/version-drift, so a genuinely-disabled move can survive
+// ranking and pin us. Guard: count how many ticks we've pressed the SAME move without the
+// CommandPhase advancing; after a couple of rejections, SKIP that index and try the next-ranked
+// move (ultimately slot 0 / Struggle), so a mis-classified move can never trap the bot.
+let fightLastIdx = -1; // the move index we pressed on the previous FIGHT tick
+let fightRepeat = 0; // consecutive FIGHT ticks pressing that same index (turn not advancing)
+const FIGHT_REJECT_LIMIT = 2; // after this many same-index presses, rotate off it as un-selectable
+
 // ── Animation-scene anti-wedge ───────────────────────────────────────────────
 // EVOLUTION_SCENE / EGG_HATCH_SCENE are passive animation phases. Their UI handlers accept
 // ACTION *only* at the trailing "…evolved/hatched!" prompt (awaitingActionInput); during the
@@ -338,6 +361,8 @@ export function resetPolicy(): void {
   releasingForSwap = false;
   releaseSlot = -1;
   switchAvoidSlots = new Set<number>();
+  fightLastIdx = -1;
+  fightRepeat = 0;
   learnDecision = null;
   learnMoveSteps = 0;
   learnDeclined = false;
