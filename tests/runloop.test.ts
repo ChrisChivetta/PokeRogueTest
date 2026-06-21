@@ -11,6 +11,14 @@ describe("decideLoopAction", () => {
     }
   });
 
+  it("routes the passive evolution / egg-hatch scenes to the policy (so they get dismissed)", () => {
+    // These post-battle animation screens otherwise fall through to WAIT and wedge the wave,
+    // tripping the turn-cap safety halt over and over.
+    for (const m of ["EVOLUTION_SCENE", "EGG_HATCH_SCENE", "EGG_HATCH_SUMMARY"]) {
+      expect(decideLoopAction(ctx({ uiMode: m }))).toBe("PLAY");
+    }
+  });
+
   it("routes shared modes by whether a run is in progress", () => {
     // In a run: dialogue / confirm / encounter sub-option → battle policy.
     for (const m of ["MESSAGE", "CONFIRM", "OPTION_SELECT"]) {

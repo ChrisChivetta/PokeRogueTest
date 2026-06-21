@@ -98,6 +98,24 @@ describe("policy routing", () => {
     expect(rec.presses).toEqual(["nav:1->0", "5:command:fight-soften"]); // 0 = FIGHT (soften)
   });
 
+  it("EVOLUTION_SCENE presses ACTION to skip/dismiss the evolution", async () => {
+    // Passive animation scene — never sets awaitingActionInput during the cycle, so without a
+    // dedicated case the bot wedges. ACTION (5) skips the animation and clears the final prompt.
+    await step(snap({ uiMode: "EVOLUTION_SCENE", cursor: 0 }));
+    expect(rec.presses).toEqual(["5:evolution:advance"]);
+  });
+
+  it("EGG_HATCH_SCENE presses ACTION to skip/dismiss the hatch", async () => {
+    await step(snap({ uiMode: "EGG_HATCH_SCENE", cursor: 0 }));
+    expect(rec.presses).toEqual(["5:egg-hatch:advance"]);
+  });
+
+  it("EGG_HATCH_SUMMARY presses CANCEL to exit the summary", async () => {
+    // The egg summary only exits on CANCEL (6); an early press no-ops behind its blockExit window.
+    await step(snap({ uiMode: "EGG_HATCH_SUMMARY", cursor: 0 }));
+    expect(rec.presses).toEqual(["6:egg-summary:exit"]);
+  });
+
   it("BALL walks to the chosen tier and throws", async () => {
     // Cheapest available is Great (index 1) since Poké is empty; from cursor 0 → DOWN, then throw.
     await step(snap({ uiMode: "BALL", cursor: 0, enemyParty: [p({ onField: true })],

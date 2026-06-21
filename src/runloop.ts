@@ -26,10 +26,14 @@ export interface LoopContext {
   inRun: boolean;
 }
 
-// Modes that only ever appear DURING a battle → always the battle policy's job.
+// Modes that only ever appear DURING a battle → always the battle policy's job. EVOLUTION_SCENE,
+// EGG_HATCH_SCENE and EGG_HATCH_SUMMARY are passive post-battle/transition animation screens that
+// only set awaitingActionInput on their FINAL prompt — without routing them to the policy (which
+// presses to skip/dismiss) the loop WAITs forever and the wave never ends, tripping the turn-cap
+// safety halt over and over. Route them to PLAY so step() drives them to completion.
 const BATTLE_MODES = new Set([
   "COMMAND", "FIGHT", "BALL", "TARGET_SELECT", "MODIFIER_SELECT", "PARTY", "SUMMARY",
-  "MYSTERY_ENCOUNTER",
+  "MYSTERY_ENCOUNTER", "EVOLUTION_SCENE", "EGG_HATCH_SCENE", "EGG_HATCH_SUMMARY",
 ]);
 // Modes that appear BOTH in a battle (dialogue / learn-move confirm / encounter sub-option) AND
 // during title navigation (gender prompt, game-mode submenu, intro). `inRun` picks which.

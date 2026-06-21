@@ -156,6 +156,28 @@ export async function step(s: GameSnapshot): Promise<void> {
       if (getCurrentPhaseName() === "LearnMovePhase") { await handleLearnMove(s); return; }
       await press(Button.CANCEL, "summary:back");
       return;
+
+    case "EVOLUTION_SCENE":
+      // Passive animation scene (EvolutionPhase). During the animation awaitingActionInput is
+      // false, so the generic "let the game settle" path never advances and the bot wedges here.
+      // ACTION both skips the animation cycle and dismisses the "…is evolving!" completion prompt
+      // (evolution-scene-ui-handler accepts ACTION or CANCEL for the prompt). Always press to
+      // keep the scene moving to completion.
+      await press(Button.ACTION, "evolution:advance");
+      return;
+
+    case "EGG_HATCH_SCENE":
+      // Sibling animation scene (EggHatchPhase). Same wedge risk as evolution — ACTION calls
+      // trySkip() to skip the hatch animation and also dismisses the "…hatched!" prompt.
+      await press(Button.ACTION, "egg-hatch:advance");
+      return;
+
+    case "EGG_HATCH_SUMMARY":
+      // The post-hatch summary (EggSummaryUiHandler) only exits on CANCEL, and it guards against
+      // an early exit with a 1–2s blockExit window (an early CANCEL just no-ops), so it is safe
+      // to press every step until it accepts and ends the phase.
+      await press(Button.CANCEL, "egg-summary:exit");
+      return;
   }
 
   // Learn-move dialogue also surfaces as plain MESSAGE before the CONFIRM — advance it.
