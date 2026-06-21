@@ -64,6 +64,12 @@ export interface BattleSnapshot {
   isTrainer: boolean;
   /** True on a deterministic RIVAL wave (8/25/55/95/145/195) — heal to full before these. */
   isRivalWave: boolean;
+  /**
+   * True when the NEXT wave is a deterministic rival (current waveIndex+1 ∈ RIVAL_WAVES). The
+   * post-wave reward/shop screen appears BEFORE the wave counter advances, so this — not
+   * isRivalWave — is the flag the shop must read to bank revives/heals and enter the rival at full.
+   */
+  isPreRivalWave: boolean;
 }
 
 /** Deterministic Classic rival waves (ClassicFixedBossWaves: RIVAL_1..RIVAL_6). Heal to full first. */
@@ -258,6 +264,7 @@ function readBattle(scene: RawScene): BattleSnapshot | null {
     isBossWave: waveIndex != null && waveIndex % 10 === 0,
     isTrainer: !!b?.trainer,
     isRivalWave: waveIndex != null && RIVAL_WAVES.has(waveIndex),
+    isPreRivalWave: waveIndex != null && RIVAL_WAVES.has(waveIndex + 1),
   };
 }
 

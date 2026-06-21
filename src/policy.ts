@@ -243,6 +243,20 @@ let releaseSlot = -1;
 // just re-opened the menu forever (the "2:PARTY:SwitchPhase" open/abandon oscillation). Instead we
 // remember that slot here, back out, and pickPartyTarget skips it so we try the NEXT eligible mon.
 let switchAvoidSlots = new Set<number>();
+// APPLY-target slot exclusion (heal/revive). If we open a slot's per-mon menu for a bought/free
+// heal or revive and it offers NO usable APPLY/REVIVE action (e.g. a heal landed on a fainted mon,
+// or a revive on a slot the game won't revive), the OLD code abandoned the whole item (skipNext
+// reward + CANCEL) — wasting it. Instead we blacklist that slot here, back out, and pickPartyTarget
+// re-routes to the NEXT valid mon (next-most-hurt for heal, next fainted for revive). Only when
+// EVERY candidate is exhausted do we abandon. Reset per reward screen (cleared on a clean apply).
+let applyAvoidSlots = new Set<number>();
+// Bound the apply-retarget so a heal/revive that the game won't let us place ANYWHERE (or a misread
+// where pickPartyTarget keeps re-selecting the same illegal slot) can never loop forever. Each
+// apply-slot-illegal back-out increments this; past the cap we abandon the item (skipNextReward +
+// CANCEL) rather than re-open the same slot endlessly — the apply analogue of fightRepeat. Reset on
+// a clean apply or when leaving the reward screen.
+let applyIllegalCount = 0;
+const APPLY_ILLEGAL_LIMIT = 3; // after this many illegal back-outs, give the item up (anti-wedge)
 
 // ── FIGHT-menu anti-wedge ────────────────────────────────────────────────────
 // We pick the best-ranked move and press ACTION. If that move is actually UN-selectable right now
@@ -361,6 +375,8 @@ export function resetPolicy(): void {
   releasingForSwap = false;
   releaseSlot = -1;
   switchAvoidSlots = new Set<number>();
+  applyAvoidSlots = new Set<number>();
+  applyIllegalCount = 0;
   fightLastIdx = -1;
   fightRepeat = 0;
   learnDecision = null;
@@ -429,7 +445,10 @@ async function handleReward(s: GameSnapshot): Promise<void> {
   // PRE-RIVAL: the next fight is a deterministic, unforgiving scripted rival (waves 8/25/55/95/
   // 145/195) — enter at FULL strength. We force a full revive+heal-to-100% (preRival mode) and
   // lift the normal per-screen buy cap so banking money on heals isn't truncated mid-prep.
-  const preRival = s.battle?.isRivalWave ?? false;
+  // CRITICAL: the shop screen shows BEFORE the wave counter advances, so the upcoming rival is
+  // isPreRivalWave (waveIndex+1 ∈ RIVAL_WAVES), NOT isRivalWave. Gate on either so prep fires on
+  // the reward screen right before the rival AND if we ever sample mid-rival with a shop open.
+  const preRival = (s.battle?.isPreRivalWave ?? false) || (s.battle?.isRivalWave ?? false);
   if (preRival || shopBuys < MAX_SHOP_BUYS) {
     const buy = planShopBuy(s.playerParty, s.money ?? 0, readShopHeals(h), preRival);
     if (buy) {
@@ -535,6 +554,25 @@ async function handleParty(s: GameSnapshot): Promise<void> {
         await press(Button.CANCEL, "party:switch-slot-illegal");
         return;
       }
+      // APPLY (heal/revive) landed on a slot whose menu offers no APPLY/REVIVE — e.g. a potion on a
+      // fainted mon, or a revive the game won't apply here. DON'T abandon the item: blacklist this
+      // slot, back out, and let pickPartyTarget re-route to the NEXT valid mon (next-most-hurt for a
+      // heal, next fainted for a revive). Only once every candidate is exhausted (handled below at
+      // the target<0 check, which still sets skipNextReward) do we give the item up.
+      if (pendingApply === "heal" || pendingApply === "revive") {
+        if (typeof s.cursor === "number" && s.cursor >= 0) applyAvoidSlots.add(s.cursor);
+        applyIllegalCount += 1;
+        // Anti-wedge bound: if back-out + re-pick keeps landing on an un-appliable slot (the game
+        // offers APPLY nowhere, or a misread re-selects the same slot), don't loop forever — give the
+        // item up after a few tries (matches the fightRepeat / learnMoveSteps caps elsewhere).
+        if (applyIllegalCount > APPLY_ILLEGAL_LIMIT) {
+          skipNextReward = true;
+          await press(Button.CANCEL, "party:apply-give-up");
+          return;
+        }
+        await press(Button.CANCEL, "party:apply-slot-illegal");
+        return;
+      }
       // No clean action for a reward (e.g. a TM's TEACH-only menu) → abandon this reward.
       skipNextReward = true;
       await press(Button.CANCEL, "party:abandon-options");
@@ -543,9 +581,11 @@ async function handleParty(s: GameSnapshot): Promise<void> {
     const oc = typeof h.optionsCursor === "number" ? h.optionsCursor : 0;
     if (oc < target) { await press(Button.DOWN, "party:opt-down"); return; }
     if (oc > target) { await press(Button.UP, "party:opt-up"); return; }
-    // A clean action landed — the forced-switch blacklist has served its purpose; clear it so a
-    // later switch this run starts fresh (slot identities can shift after a swap).
+    // A clean action landed — the forced-switch / apply blacklists have served their purpose; clear
+    // them so a later switch/apply this run starts fresh (slot identities can shift after a swap).
     if (switchAvoidSlots.size > 0) switchAvoidSlots = new Set<number>();
+    if (applyAvoidSlots.size > 0) applyAvoidSlots = new Set<number>();
+    applyIllegalCount = 0;
     await press(Button.ACTION, "party:select-option");
     return;
   }
@@ -561,11 +601,13 @@ async function handleParty(s: GameSnapshot): Promise<void> {
 
   // Pick the target: releasing a passenger (Part B) → that exact slot; revive → a FAINTED mon;
   // heal → the MOST-HURT live mon; otherwise (a switch) → the HEALTHIEST live mon. The avoid set
-  // (forced-switch only) skips slots whose option menu offered no SEND_OUT (the on-field mon).
+  // skips slots already rejected this screen: switch → no SEND_OUT (the on-field mon); apply →
+  // no usable APPLY/REVIVE (e.g. a potion that couldn't target a fainted mon — we re-route, not skip).
   const intent = pendingApply ?? "switch";
+  const avoid = intent === "switch" ? switchAvoidSlots : applyAvoidSlots;
   let target = releasingForSwap
     ? releaseSlot
-    : pickPartyTarget(s.playerParty, intent, switchAvoidSlots);
+    : pickPartyTarget(s.playerParty, intent, avoid);
 
   // Forced switch with every live slot blacklisted means our blacklist over-excluded (a misread).
   // The game guarantees a sendable mon exists, so clear it and retry rather than wedge on CANCEL.
@@ -575,7 +617,8 @@ async function handleParty(s: GameSnapshot): Promise<void> {
   }
 
   if (target < 0) {
-    // No valid target (e.g. a revive with nobody fainted) → back out rather than loop on it.
+    // No valid target LEFT to apply to — every eligible mon was tried and rejected (or none qualified,
+    // e.g. a revive with nobody fainted, a heal with nobody hurt). NOW abandon the item and back out.
     if (pendingApply) skipNextReward = true;
     await press(Button.CANCEL, "party:none-usable");
     return;

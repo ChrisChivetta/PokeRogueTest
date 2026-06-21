@@ -622,6 +622,62 @@ describe("reward apply targeting (the revive-loop fix)", () => {
     await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: [p({ hpRatio: 0.2 }), p({ hpRatio: 0.9 })] }));
     expect(rec.presses).toEqual(["1:party:nav"]); // slot 1 is healthiest
   });
+
+  // A potion (heal) whose target slot offers no APPLY (e.g. it's fainted) must NOT abandon the item —
+  // it blacklists that slot and backs out so the next tick re-routes to a valid mon. Regression guard
+  // for "uses a potion on a fainted pokemon, then doesn't use it at all and moves on."
+  it("a heal landing on a slot with no APPLY blacklists + backs out (re-route, not abandon)", async () => {
+    // Take a Potion on the reward screen → records pendingApply="heal".
+    hRef.current = {
+      rowCursor: 1,
+      options: [{ modifierTypeOption: { type: { id: "POTION", tier: 1 } } }],
+      shopOptionsRows: [],
+    };
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0, money: 0, playerParty: [p({ hpRatio: 0.5 })] }));
+    expect(rec.presses.at(-1)).toBe("5:reward:take-best");
+
+    // PARTY opens, cursor on a slot whose option menu has NO APPLY (only SUMMARY=6 / CANCEL=-1).
+    rec.presses = [];
+    hRef.current = { optionsMode: true, options: [6, -1], optionsCursor: 0 };
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: [p({ fainted: true, hpRatio: 0 }), p({ hpRatio: 0.5 })] }));
+    // It backs out to re-route — NOT "party:abandon-options" (which would skip the reward entirely).
+    expect(rec.presses.at(-1)).toBe("6:party:apply-slot-illegal");
+  });
+
+  // Anti-wedge bound: if the heal/revive's per-mon menu offers no APPLY on EVERY slot we try (a misread,
+  // or the game won't place it anywhere), the back-out + re-route must NOT loop forever. After
+  // APPLY_ILLEGAL_LIMIT (3) illegal back-outs the bot gives the item up (skipNextReward + apply-give-up)
+  // instead of re-opening the same un-appliable slot endlessly. Regression guard for the live apply-loop.
+  it("a heal that's illegal on every slot gives up after the cap (no infinite apply-loop)", async () => {
+    // Take a Potion → pendingApply="heal".
+    hRef.current = {
+      rowCursor: 1,
+      options: [{ modifierTypeOption: { type: { id: "POTION", tier: 1 } } }],
+      shopOptionsRows: [],
+    };
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0, money: 0, playerParty: [p({ hpRatio: 0.5 })] }));
+    expect(rec.presses.at(-1)).toBe("5:reward:take-best");
+
+    // Each tick: open a slot whose menu has NO APPLY (only SUMMARY=6 / CANCEL=-1). The cursor keeps
+    // landing on an un-appliable slot. The first APPLY_ILLEGAL_LIMIT (3) ticks back out via
+    // apply-slot-illegal; the next tick (4th) escalates to apply-give-up and abandons the item.
+    const party = [p({ fainted: true, hpRatio: 0 }), p({ fainted: true, hpRatio: 0 })];
+    const illegalTick = async (cursor: number) => {
+      rec.presses = [];
+      hRef.current = { optionsMode: true, options: [6, -1], optionsCursor: 0 };
+      await step(snap({ uiMode: "PARTY", cursor, playerParty: party }));
+    };
+
+    await illegalTick(0);
+    expect(rec.presses.at(-1)).toBe("6:party:apply-slot-illegal"); // count 1
+    await illegalTick(1);
+    expect(rec.presses.at(-1)).toBe("6:party:apply-slot-illegal"); // count 2
+    await illegalTick(0);
+    expect(rec.presses.at(-1)).toBe("6:party:apply-slot-illegal"); // count 3
+    await illegalTick(1);
+    // count 4 > APPLY_ILLEGAL_LIMIT (3) → give the item up rather than loop forever.
+    expect(rec.presses.at(-1)).toBe("6:party:apply-give-up");
+  });
 });
 
 describe("shop / money healing", () => {
@@ -658,6 +714,39 @@ describe("shop / money healing", () => {
     };
     await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0, money: 999, playerParty: [p({ hpRatio: 1 })] }));
     expect(rec.presses.at(-1)).toBe("5:reward:take-best"); // straight to the free reward
+  });
+
+  // The reward/shop screen shows BEFORE the wave counter advances, so the screen right before a
+  // rival reads the wave that just ended (isPreRivalWave), NOT isRivalWave. Pre-rival prep must
+  // still fire: heal a lightly-hurt mon (above the normal threshold) the game would otherwise skip.
+  it("PRE-RIVAL: heals a mon above the normal threshold (full-strength prep before the rival)", async () => {
+    hRef.current = {
+      rowCursor: 1,
+      options: [{ modifierTypeOption: { type: { id: "LEFTOVERS", tier: 2 } } }],
+      shopOptionsRows: [[{ modifierTypeOption: { cost: 50, type: { id: "POTION" } } }]],
+    };
+    // hpRatio 0.8 is ABOVE healHpThreshold (0.66) → no buy normally; but isPreRivalWave forces
+    // a heal-to-100% so we enter the rival at full strength. The shop row is at rowCursor 2 → UP.
+    await step(snap({
+      uiMode: "MODIFIER_SELECT", cursor: 0, money: 999,
+      playerParty: [p({ hpRatio: 0.8 })],
+      battle: { isPreRivalWave: true, isRivalWave: false } as any,
+    }));
+    expect(rec.presses.at(-1)).toBe("0:shop:to-row"); // UP toward the heal — prep fired
+  });
+
+  it("a healthy party right before a NON-rival wave still skips the shop", async () => {
+    hRef.current = {
+      rowCursor: 1,
+      options: [{ modifierTypeOption: { type: { id: "LEFTOVERS", tier: 2 } } }],
+      shopOptionsRows: [[{ modifierTypeOption: { cost: 50, type: { id: "POTION" } } }]],
+    };
+    await step(snap({
+      uiMode: "MODIFIER_SELECT", cursor: 0, money: 999,
+      playerParty: [p({ hpRatio: 0.8 })],
+      battle: { isPreRivalWave: false, isRivalWave: false } as any,
+    }));
+    expect(rec.presses.at(-1)).toBe("5:reward:take-best"); // 0.8 > 0.66 threshold → no buy
   });
 });
 
