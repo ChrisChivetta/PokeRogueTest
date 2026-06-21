@@ -98,15 +98,25 @@ describe("policy routing", () => {
     expect(rec.presses).toEqual(["nav:1->0", "5:command:fight-soften"]); // 0 = FIGHT (soften)
   });
 
-  it("EVOLUTION_SCENE presses ACTION to skip/dismiss the evolution", async () => {
-    // Passive animation scene — never sets awaitingActionInput during the cycle, so without a
-    // dedicated case the bot wedges. ACTION (5) skips the animation and clears the final prompt.
-    await step(snap({ uiMode: "EVOLUTION_SCENE", cursor: 0 }));
-    expect(rec.presses).toEqual(["5:evolution:advance"]);
+  it("EVOLUTION_SCENE WAITS (no press) while the animation plays — never masks", async () => {
+    // Passive animation scene. The handler only accepts ACTION at the trailing prompt; mashing it
+    // mid-animation races the phase system into a permanent wedge. So with no prompt we sit still.
+    await step(snap({ uiMode: "EVOLUTION_SCENE", cursor: 0, awaitingActionInput: false }));
+    expect(rec.presses).toEqual([]); // wait — let the animation finish
   });
 
-  it("EGG_HATCH_SCENE presses ACTION to skip/dismiss the hatch", async () => {
-    await step(snap({ uiMode: "EGG_HATCH_SCENE", cursor: 0 }));
+  it("EVOLUTION_SCENE presses ACTION only once the trailing prompt awaits input", async () => {
+    await step(snap({ uiMode: "EVOLUTION_SCENE", cursor: 0, awaitingActionInput: true }));
+    expect(rec.presses).toEqual(["5:evolution:advance"]); // clear the "X evolved!" prompt
+  });
+
+  it("EGG_HATCH_SCENE WAITS (no press) while the hatch plays", async () => {
+    await step(snap({ uiMode: "EGG_HATCH_SCENE", cursor: 0, awaitingActionInput: false }));
+    expect(rec.presses).toEqual([]);
+  });
+
+  it("EGG_HATCH_SCENE presses ACTION at the trailing prompt", async () => {
+    await step(snap({ uiMode: "EGG_HATCH_SCENE", cursor: 0, awaitingActionInput: true }));
     expect(rec.presses).toEqual(["5:egg-hatch:advance"]);
   });
 

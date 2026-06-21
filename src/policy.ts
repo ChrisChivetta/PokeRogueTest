@@ -44,6 +44,13 @@ export async function step(s: GameSnapshot): Promise<void> {
     }
   }
 
+  // Clear the animation-scene stuck counter the moment we leave a scene mode. Without this, a SECOND
+  // evolution (re-entering EVOLUTION_SCENE after we left to MESSAGE) would keep a stale high tick
+  // count and could fire a spurious CANCEL on its very first frame, aborting the evolution.
+  if (sceneStuckMode !== null && s.uiMode !== "EVOLUTION_SCENE" && s.uiMode !== "EGG_HATCH_SCENE") {
+    sceneStuckMode = null; sceneStuckTicks = 0;
+  }
+
   switch (s.uiMode) {
     case "COMMAND": {
       pendingApply = null; // a new turn began; any reward-apply is finished
@@ -158,18 +165,20 @@ export async function step(s: GameSnapshot): Promise<void> {
       return;
 
     case "EVOLUTION_SCENE":
-      // Passive animation scene (EvolutionPhase). During the animation awaitingActionInput is
-      // false, so the generic "let the game settle" path never advances and the bot wedges here.
-      // ACTION both skips the animation cycle and dismisses the "…is evolving!" completion prompt
-      // (evolution-scene-ui-handler accepts ACTION or CANCEL for the prompt). Always press to
-      // keep the scene moving to completion.
-      await press(Button.ACTION, "evolution:advance");
+      // Passive animation scene (EvolutionPhase). Its handler (evolution-scene-ui-handler.ts:58-74)
+      // accepts ACTION *only* at the trailing "…evolved!" prompt (awaitingActionInput && onActionInput);
+      // during the animation only CANCEL is accepted. The old code mashed ACTION every tick, which
+      // no-ops mid-animation and can race/consume the one-shot completion prompt → the wave-9 wedge
+      // (1494/1510 wave-9 frames were ACTION-mash). DON'T mash: advance only when awaiting, else wait,
+      // and escalate to a single CANCEL (which the animation sub-state honours) on a genuine hang.
+      await advanceAnimationScene("EVOLUTION_SCENE", s.awaitingActionInput, "evolution");
       return;
 
     case "EGG_HATCH_SCENE":
-      // Sibling animation scene (EggHatchPhase). Same wedge risk as evolution — ACTION calls
-      // trySkip() to skip the hatch animation and also dismisses the "…hatched!" prompt.
-      await press(Button.ACTION, "egg-hatch:advance");
+      // Sibling animation scene (EggHatchPhase). egg-hatch trySkip() accepts ACTION *or* CANCEL but
+      // briefly disables skip mid-hatch; same anti-mash + CANCEL-escalation handling keeps it moving
+      // without racing the skip window.
+      await advanceAnimationScene("EGG_HATCH_SCENE", s.awaitingActionInput, "egg-hatch");
       return;
 
     case "EGG_HATCH_SUMMARY":
@@ -226,6 +235,21 @@ let releaseSlot = -1;
 // remember that slot here, back out, and pickPartyTarget skips it so we try the NEXT eligible mon.
 let switchAvoidSlots = new Set<number>();
 
+// ── Animation-scene anti-wedge ───────────────────────────────────────────────
+// EVOLUTION_SCENE / EGG_HATCH_SCENE are passive animation phases. Their UI handlers accept
+// ACTION *only* at the trailing "…evolved/hatched!" prompt (awaitingActionInput); during the
+// multi-second animation ACTION is a no-op and mashing it can race/consume the one-shot
+// completion prompt (onActionInput) and WEDGE the scene forever — exactly the wave-9
+// EVOLUTION_SCENE stall seen in soak telemetry (1494/1510 wave-9 frames were ACTION-mash).
+// So we DON'T mash: advance only when the handler is genuinely waiting. As a last-resort
+// escape hatch, if we sit in the scene for STUCK_TICKS_ESCALATE consecutive ticks without
+// ever seeing awaitingActionInput, we press CANCEL once — CANCEL is accepted in the animation
+// sub-state (evolution-scene-ui-handler line 59: cancels the evolution → EndEvolutionPhase →
+// MESSAGE; egg-hatch trySkip also accepts CANCEL), trading one skipped evolution for a live run.
+let sceneStuckMode: string | null = null; // which scene mode we're counting stuck ticks for
+let sceneStuckTicks = 0;
+const STUCK_TICKS_ESCALATE = 6; // ~4s at the 700ms tick — well past a normal animation+prompt
+
 // ── Learn-move state ─────────────────────────────────────────────────────────
 // The learn-move flow spans MESSAGE → CONFIRM → SUMMARY. We compute the decision once
 // (at the CONFIRM/SUMMARY point, when the candidate + moveset are readable) and remember
@@ -271,6 +295,40 @@ export function pickPartyTarget(
   return target;
 }
 
+/**
+ * Decide how to handle a passive animation scene (EVOLUTION_SCENE / EGG_HATCH_SCENE) this tick.
+ * PURE so it's unit-testable. Returns the action plus the next stuck-tick count.
+ *
+ *  • awaiting === true  → the trailing "…evolved/hatched!" prompt is up: "advance" (ACTION).
+ *  • else, stuck < cap  → animation still playing: "wait" (do nothing — DON'T mash).
+ *  • else (stuck ≥ cap) → genuine wedge: "cancel" once (CANCEL escapes the animation sub-state),
+ *                          then reset the counter so we don't spam CANCEL.
+ *
+ * `stuckTicks` is how many consecutive prior ticks we've been in this scene WITHOUT awaiting input.
+ */
+export function decideScenePress(
+  awaiting: boolean,
+  stuckTicks: number,
+  cap = STUCK_TICKS_ESCALATE,
+): { act: "advance" | "wait" | "cancel"; nextStuck: number } {
+  if (awaiting) return { act: "advance", nextStuck: 0 };
+  if (stuckTicks + 1 >= cap) return { act: "cancel", nextStuck: 0 };
+  return { act: "wait", nextStuck: stuckTicks + 1 };
+}
+
+/**
+ * Drive a passive animation scene without mashing. Tracks consecutive stuck ticks per mode and
+ * escalates to CANCEL only on a genuine wedge. `why` tags the press for telemetry.
+ */
+async function advanceAnimationScene(mode: string, awaiting: boolean, tag: string): Promise<void> {
+  if (sceneStuckMode !== mode) { sceneStuckMode = mode; sceneStuckTicks = 0; }
+  const { act, nextStuck } = decideScenePress(awaiting, sceneStuckTicks);
+  sceneStuckTicks = nextStuck;
+  if (act === "advance") { await press(Button.ACTION, `${tag}:advance`); return; }
+  if (act === "cancel") { await press(Button.CANCEL, `${tag}:unwedge`); return; }
+  // act === "wait": let the animation settle; the watchdog escalation handles a true hang.
+}
+
 /** Reset internal policy state (test seam). */
 export function resetPolicy(): void {
   skipNextReward = false;
@@ -284,6 +342,8 @@ export function resetPolicy(): void {
   learnMoveSteps = 0;
   learnDeclined = false;
   learnMoveCursor = null;
+  sceneStuckMode = null;
+  sceneStuckTicks = 0;
   resetCatch();
 }
 
