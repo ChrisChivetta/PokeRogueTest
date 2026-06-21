@@ -20,11 +20,12 @@ import { mountHud, updateHud } from "./hud";
 import { sleep, actionsSentCount, press, recentPresses } from "./input";
 import { Button, type ButtonName } from "./bridge";
 import { getPolicy, applyPolicyModule, policyVersion } from "./policy-registry";
+import { getStrategy, applyStrategyModule, strategyVersion } from "./strategy-registry";
 import { publishHostSeam } from "./host-seam";
 import { decideLoopAction, isServerTrouble } from "./runloop";
-import { driveStartRun, driveStarterSelect, resetStarterSelect } from "./execution";
+import { resetStarterSelect } from "./execution";
 import { getCurrentPhaseName } from "./bridge";
-import { planRun, summarizeProgress } from "./orchestrator";
+import { summarizeProgress } from "./orchestrator";
 import { readRoster } from "./roster";
 import { checkRunSafety, resetSafety } from "./safety";
 import { shouldRetry, noteRetry, retryGeneration, resetRetry, noteWave, retriesTaken } from "./retry";
@@ -73,7 +74,10 @@ async function tick(snap: GameSnapshot): Promise<void> {
   // save-slot) that decideLoopAction can't tell apart by mode alone — route the whole phase to the
   // team driver. Outside it, drop the cached plan so the next run re-plans from fresh ribbons.
   if (phase === "SelectStarterPhase") {
-    if (config.enabled) await driveStarterSelect(snap);
+    // Route through the hot-swappable strategy registry, not a static import: a live strategy patch
+    // (autoRibbon.reloadStrategy) takes effect on the next tick and resumes the in-flight
+    // starter-select in place (its phase state lives on the host seam — see exec-state.ts).
+    if (config.enabled) await getStrategy().driveStarterSelect(snap);
     return;
   }
   resetStarterSelect();
@@ -97,7 +101,7 @@ async function tick(snap: GameSnapshot): Promise<void> {
   // At the title, log ribbon progress (deduped) and decide whether the objective is complete.
   let objectiveDone = false;
   if (snap.uiMode === "TITLE") {
-    const plan = planRun(readRoster());
+    const plan = getStrategy().planRun(readRoster());
     objectiveDone = plan.done;
     const progress = summarizeProgress(plan);
     if (progress !== lastProgress) {
@@ -114,10 +118,10 @@ async function tick(snap: GameSnapshot): Promise<void> {
       await getPolicy()(snap);
       return;
     case "START_RUN":
-      await driveStartRun(snap);
+      await getStrategy().driveStartRun(snap);
       return;
     case "SELECT_TEAM":
-      await driveStarterSelect(snap); // fallback if the phase name was unreadable
+      await getStrategy().driveStarterSelect(snap); // fallback if the phase name was unreadable
       return;
     case "STOP_DONE":
       if (!announcedDone) {
@@ -180,7 +184,7 @@ const api = {
   },
   /** Compact ribbon progress for telemetry/soak: {owned, ribboned, remaining, done}. */
   progress(): { owned: number; ribboned: number; remaining: number; done: boolean } {
-    const plan = planRun(readRoster());
+    const plan = getStrategy().planRun(readRoster());
     return { owned: plan.ownedCount, ribboned: plan.ribbonedCount, remaining: plan.remaining, done: plan.done };
   },
   /**
@@ -204,6 +208,7 @@ const api = {
       cursor: s.cursor ?? null,
       awaitingActionInput: s.awaitingActionInput ?? null,
       policyVersion: policyVersion(),
+      strategyVersion: strategyVersion(),
       recentPresses: recentPresses().slice(-12),
       wave: s.battle?.waveIndex ?? null,
       isBossWave: s.battle?.isBossWave ?? false,
@@ -265,13 +270,34 @@ const api = {
   policyVersion(): number {
     return policyVersion();
   },
+
+  /**
+   * Hot-swap the UI-driving + planning STRATEGY WITHOUT reloading the page. `src` is a freshly-built
+   * strategy bundle (dist/strategy.hot.js) that sets globalThis.__strategyModule =
+   * { driveStartRun, driveStarterSelect, planRun }. An in-flight starter-select resumes in place
+   * (its phase state lives on the host seam). A bad patch is rejected and the previous strategy keeps
+   * driving — see strategy-registry.applyStrategyModule.
+   */
+  reloadStrategy(src: string): { ok: boolean; version: number; error?: string } {
+    const res = applyStrategyModule(src);
+    if (res.ok && !config.enabled) {
+      // If we'd paused on the stall, come back to life with the patched strategy.
+      config.enabled = true;
+      void driveLoop();
+    }
+    return res;
+  },
+  /** Current strategy version (0 = the built-in strategy that shipped in the bundle). */
+  strategyVersion(): number {
+    return strategyVersion();
+  },
 };
 
 (window as any).autoRibbon = api;
 
-// Expose the live seam singletons so a hot-swapped policy bundle shares this bundle's exact
-// config/input/bridge/catch/retry/roster (see host-seam.ts + seam-shims/). Must run before any
-// reloadPolicy call.
+// Expose the live seam singletons so a hot-swapped policy/strategy bundle shares this bundle's exact
+// config/input/bridge/catch/retry/roster/exec-state (see host-seam.ts + seam-shims/). Must run
+// before any reloadPolicy/reloadStrategy call.
 publishHostSeam();
 
 mountHud();

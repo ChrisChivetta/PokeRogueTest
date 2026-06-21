@@ -42,6 +42,11 @@ const HOT_BUNDLE = "dist/policy.hot.js";
 // resumes from the stalled wave/phase — no browser restart, no run lost. See harness/auto-iterate.mjs.
 const HOT_RELOAD = (process.env.SOAK_HOT_RELOAD ?? "0") === "1";
 const RELOAD_SIGNAL = process.env.SOAK_RELOAD_SIGNAL ?? "policy-reload.signal";
+// Second sentinel: the agent fixes src/execution.ts (or orchestrator/team/candy), rebuilds
+// dist/strategy.hot.js, and drops this to live-swap the UI-driving + planning STRATEGY in place —
+// an in-flight starter-select resumes mid-flow (its phase state lives on the host seam).
+const STRATEGY_BUNDLE = "dist/strategy.hot.js";
+const STRATEGY_RELOAD_SIGNAL = process.env.SOAK_STRATEGY_RELOAD_SIGNAL ?? "strategy-reload.signal";
 
 const glArgs =
   GL === "auto" ? [] // force nothing → Chrome uses the platform's real GPU (use this on a Mac)
@@ -139,6 +144,29 @@ async function reloadPolicyFromDisk(page) {
   }
 }
 
+/**
+ * Live-swap the UI-driving + planning STRATEGY into the RUNNING page from dist/strategy.hot.js, then
+ * resume. The Phaser scene is untouched and starter-select phase state lives on the host seam, so an
+ * in-flight starter-select resumes mid-flow with the patched adapters. Returns the in-page reload
+ * result {ok, version, error}. A rejected (bad) patch leaves the prior strategy driving.
+ */
+async function reloadStrategyFromDisk(page) {
+  let src;
+  try {
+    src = readFileSync(STRATEGY_BUNDLE, "utf8");
+  } catch (e) {
+    return { ok: false, error: `cannot read ${STRATEGY_BUNDLE}: ${e.message}` };
+  }
+  try {
+    const res = await page.evaluate((s) => globalThis.autoRibbon.reloadStrategy(s), src);
+    // reloadStrategy auto-resumes if we were paused; make sure the bot is enabled regardless.
+    await page.evaluate(() => globalThis.autoRibbon.start()).catch(() => {});
+    return res;
+  } catch (e) {
+    return { ok: false, error: String(e.message).slice(0, 200) };
+  }
+}
+
 let browser = await chromium.launch(launchOpts);
 let page = await bootBot(browser);
 emit("start", { url: URL, minutes: MINUTES, hours: HOURS, gl: GL, headed: HEADED, log: LOG, enableRetries: ENABLE_RETRIES, humanPacing: HUMAN_PACING });
@@ -178,6 +206,23 @@ while (Date.now() < DEADLINE) {
       console.log(`[soak] policy hot-swapped → v${res.version}; resumed in place.`);
     } else {
       console.log(`[soak] policy reload REJECTED: ${res.error}`);
+    }
+  }
+
+  // ── Live strategy hot-reload ────────────────────────────────────────────────
+  // The agent fixes src/execution.ts (or orchestrator/team/candy), rebuilds dist/strategy.hot.js,
+  // then drops STRATEGY_RELOAD_SIGNAL. We swap the new UI-driving + planning adapters into the running
+  // page; an in-flight starter-select resumes mid-flow (its phase state lives on the host seam).
+  if (HOT_RELOAD && existsSync(STRATEGY_RELOAD_SIGNAL)) {
+    try { rmSync(STRATEGY_RELOAD_SIGNAL); } catch {}
+    const res = await reloadStrategyFromDisk(page);
+    emit("strategy-reload", res);
+    if (res.ok) {
+      // Clear stall bookkeeping so the watchdog gives the patched strategy a fresh window to progress.
+      pausedForStall = false; lastStallKey = ""; progressKey = ""; progressSince = Date.now();
+      console.log(`[soak] strategy hot-swapped → v${res.version}; resumed in place.`);
+    } else {
+      console.log(`[soak] strategy reload REJECTED: ${res.error}`);
     }
   }
 

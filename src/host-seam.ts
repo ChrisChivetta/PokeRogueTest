@@ -18,9 +18,10 @@ import * as input from "./input";
 import * as catchMod from "./catch";
 import * as retry from "./retry";
 import * as roster from "./roster";
+import * as execStateMod from "./exec-state";
 import { config } from "./config";
 
-/** The live singletons the hot policy bundle reads through its shims. */
+/** The live singletons the hot policy/strategy bundles read through their shims. */
 export interface HostSeam {
   config: typeof config;
   bridge: typeof bridge;
@@ -28,6 +29,8 @@ export interface HostSeam {
   catch: typeof catchMod;
   retry: typeof retry;
   roster: typeof roster;
+  /** Starter-select phase state — shared so a hot strategy swap resumes in place. */
+  execState: typeof execStateMod;
 }
 
 export function publishHostSeam(): void {
@@ -38,5 +41,6 @@ export function publishHostSeam(): void {
     catch: catchMod,
     retry,
     roster,
+    execState: execStateMod,
   } satisfies HostSeam;
 }

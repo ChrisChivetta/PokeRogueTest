@@ -13,6 +13,7 @@ import { config } from "./config";
 import { readRoster, readCandyStarters } from "./roster";
 import { selectTeam } from "./team";
 import { planCandy } from "./candy";
+import { execState, resetExecState } from "./exec-state";
 import { log } from "./log";
 
 /** Labels of the active option/title menu, lowercased; [] if unreadable. */
@@ -68,14 +69,12 @@ export async function driveStartRun(s: GameSnapshot): Promise<void> {
 // "Use Candies" → "Reduce Cost" sub-menus — done first so the cheaper carry frees budget; then
 // (2) build the team (computed AFTER reductions) and start.
 
-let planIds: number[] | null = null;
-let candyDone = false;
-let candyAttempts = 0;
-let settledIdx = -1; // grid index we've confirmed the cursor moved onto (so setSpecies has fired)
+// Starter-select phase state lives on the host seam (src/exec-state.ts) so it SURVIVES a strategy
+// hot-swap — an in-progress starter-select resumes in place rather than re-planning from scratch.
+//
 // Bounds the candy phase so a mis-navigation can't loop forever before we move on to the team.
 const MAX_CANDY_ATTEMPTS = 40;
 
-let lastSubmitAt = 0;
 // After SUBMIT, tryStart shows a "confirm start team?" message via the message handler WITHOUT
 // changing getMode() (the starter handler isn't a MessageUiHandler) — so the screen still reads
 // STARTER_SELECT for ~1s while the text types and its callback opens the CONFIRM. We must NOT
@@ -84,21 +83,17 @@ const SUBMIT_COOLDOWN_MS = 3000;
 
 /** Drop the cached plan + phase state (call when leaving starter select / between runs). */
 export function resetStarterSelect(): void {
-  planIds = null;
-  candyDone = false;
-  candyAttempts = 0;
-  settledIdx = -1;
-  lastSubmitAt = 0;
+  resetExecState();
 }
 
 /** The planned team's species ids, computed once per starter-select visit from the live roster. */
 function teamPlan(): number[] {
-  if (!planIds) {
+  if (!execState.planIds) {
     const plan = selectTeam(readRoster());
-    planIds = plan.team.map((s) => s.speciesId);
-    log.info(`[starter] plan: [${planIds.join(", ")}] (carry #${plan.carry?.speciesId ?? "?"})`);
+    execState.planIds = plan.team.map((s) => s.speciesId);
+    log.info(`[starter] plan: [${execState.planIds.join(", ")}] (carry #${plan.carry?.speciesId ?? "?"})`);
   }
-  return planIds;
+  return execState.planIds;
 }
 
 export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
@@ -114,7 +109,7 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
       : [];
     const find = (needle: string) => labels.findIndex((l) => l.includes(needle));
 
-    if (!candyDone) {
+    if (!execState.candyDone) {
       // Candy sub-flow: in the per-mon menu pick "Use Candies"; in the candy menu pick "Reduce
       // Cost". If the candy menu has no reduction left (maxed/unaffordable), back out to re-plan.
       const reduce = find("reduce cost");
@@ -143,15 +138,15 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
   // ── Phase 1: spend candy to shave starter costs (carries first), before planning the team so
   // the cheaper carry frees budget. Each affordable reduction is applied via that mon's menu;
   // gameData updates after each, so planCandy naturally shrinks until nothing's left.
-  if (!candyDone && !config.applyCandyReductions) {
-    candyDone = true; // candy application disabled (experimental) → straight to team building
+  if (!execState.candyDone && !config.applyCandyReductions) {
+    execState.candyDone = true; // candy application disabled (experimental) → straight to team building
   }
-  if (!candyDone) {
+  if (!execState.candyDone) {
     const pending = planCandy(readCandyStarters());
-    if (pending.length === 0 || candyAttempts >= MAX_CANDY_ATTEMPTS) {
-      candyDone = true; // every reduction applied (or we've tried enough) → build the team
+    if (pending.length === 0 || execState.candyAttempts >= MAX_CANDY_ATTEMPTS) {
+      execState.candyDone = true; // every reduction applied (or we've tried enough) → build the team
     } else {
-      candyAttempts++;
+      execState.candyAttempts++;
       const next = pending.find((a) => idxOf(a.speciesId) >= 0);
       if (!next) return; // pending but not reachable this tick — wait, don't latch candyDone
       await approachAndOpen(h, idxOf(next.speciesId), "starter:open-candy-menu");
@@ -170,8 +165,8 @@ export async function driveStarterSelect(s: GameSnapshot): Promise<void> {
   // message (which leaves getMode() on STARTER_SELECT) so we don't restart it. The CONFIRM it opens
   // is handled above; if it never appears we retry after the cooldown.
   if ((remaining.length === 0 && teamIds.length > 0) || teamIds.length >= 6) {
-    if (Date.now() - lastSubmitAt < SUBMIT_COOLDOWN_MS) return;
-    lastSubmitAt = Date.now();
+    if (Date.now() - execState.lastSubmitAt < SUBMIT_COOLDOWN_MS) return;
+    execState.lastSubmitAt = Date.now();
     await press(Button.SUBMIT, "starter:start");
     return;
   }
@@ -194,15 +189,15 @@ const GRID_STEPS_PER_TICK = 8;
  */
 async function approachAndOpen(h: any, idx: number, why: string): Promise<void> {
   if (h.startCursorObj?.visible === true || h.randomCursorObj?.visible === true) {
-    settledIdx = -1;
+    execState.settledIdx = -1;
     await press(Button.LEFT, "starter:to-grid");
     return;
   }
   const cur = typeof h.cursor === "number" ? h.cursor : 0;
-  if (cur !== idx) { settledIdx = idx; await stepGridTo(h, idx); return; }
-  if (settledIdx !== idx) {
+  if (cur !== idx) { execState.settledIdx = idx; await stepGridTo(h, idx); return; }
+  if (execState.settledIdx !== idx) {
     // We started on the target without moving — nudge off so the return trip fires setSpecies.
-    settledIdx = idx;
+    execState.settledIdx = idx;
     await press(idx % 9 === 8 ? Button.LEFT : Button.RIGHT, "starter:settle");
     return;
   }
