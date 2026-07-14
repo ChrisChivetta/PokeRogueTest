@@ -51,6 +51,10 @@ export async function step(s: GameSnapshot): Promise<void> {
     sceneStuckMode = null; sceneStuckTicks = 0;
   }
 
+  // The game has actually left PARTY (the async post-apply transition we were waiting out landed)
+  // — safe to act on a fresh PARTY session again next time it opens.
+  if (awaitingPartyExit && s.uiMode !== "PARTY") awaitingPartyExit = false;
+
   switch (s.uiMode) {
     case "COMMAND": {
       pendingApply = null; // a new turn began; any reward-apply is finished
@@ -236,6 +240,11 @@ const MAX_SHOP_BUYS = 8;
 // Part B: we chose to keep a full-party catch and are releasing a passenger; releaseSlot is which.
 let releasingForSwap = false;
 let releaseSlot = -1;
+// Set right after pressing ACTION to confirm a per-mon option (SEND_OUT/APPLY/REVIVE/RELEASE):
+// the terminal action for this PARTY session is done, and we're waiting for the game's async
+// transition out of PARTY to actually land. Blocks handleParty from re-deriving a target and
+// pressing again in the meantime (see the awaitingPartyExit check above).
+let awaitingPartyExit = false;
 // FORCED-SWITCH slot exclusion. The game only offers SEND_OUT for party slots that are NOT
 // already on the field (updateOptions: `cursor >= getBattlerCount()`). If we open the per-mon
 // menu on a slot the game won't let us send out, SEND_OUT is absent and the old code set
@@ -309,8 +318,11 @@ let learnMoveCursor: number | null = null;
 
 /**
  * Which party slot to act on, given the intent. PURE so it's unit-testable. A revive targets the
- * first FAINTED mon; a heal the MOST-HURT live mon; a switch the HEALTHIEST live mon. Returns -1
- * if there's no valid target (e.g. a revive with nobody fainted).
+ * first FAINTED mon; a heal the MOST-HURT live mon (skipping full-HP mons — the game's own
+ * selectFilter rejects a heal item on a full-HP, non-statused mon as "no effect" and refuses the
+ * target, which otherwise wedges PARTY open: the per-mon menu closes with no transition and our
+ * caller never sees anywhere else to go); a switch the HEALTHIEST live mon. Returns -1 if there's
+ * no valid target (e.g. a revive with nobody fainted, or a heal with nobody actually hurt).
  */
 export function pickPartyTarget(
   party: GameSnapshot["playerParty"],
@@ -322,7 +334,12 @@ export function pickPartyTarget(
   let target = -1;
   if (intent === "heal") {
     let worst = Infinity;
-    party.forEach((p, i) => { if (!p.fainted && !skip(i)) { const hp = p.hpRatio ?? 1; if (hp < worst) { worst = hp; target = i; } } });
+    party.forEach((p, i) => {
+      if (p.fainted || skip(i)) return;
+      const hp = p.hpRatio ?? 1;
+      if (hp >= 1) return; // full HP — the game refuses a heal item here (no status-heal modeling)
+      if (hp < worst) { worst = hp; target = i; }
+    });
   } else {
     // switch: prefer the healthiest live mon the game will actually let us send out (avoid set
     // holds slots where SEND_OUT wasn't offered — typically the on-field mon at index < battlerCount).
@@ -374,6 +391,7 @@ export function resetPolicy(): void {
   shopBuys = 0;
   releasingForSwap = false;
   releaseSlot = -1;
+  awaitingPartyExit = false;
   switchAvoidSlots = new Set<number>();
   applyAvoidSlots = new Set<number>();
   applyIllegalCount = 0;
@@ -512,6 +530,7 @@ async function handleParty(s: GameSnapshot): Promise<void> {
     pendingApply = null;
     releasingForSwap = false;
     releaseSlot = -1;
+    awaitingPartyExit = false;
   }
 
   if (h.optionsMode === true && Array.isArray(h.options)) {
@@ -586,6 +605,19 @@ async function handleParty(s: GameSnapshot): Promise<void> {
     if (switchAvoidSlots.size > 0) switchAvoidSlots = new Set<number>();
     if (applyAvoidSlots.size > 0) applyAvoidSlots = new Set<number>();
     applyIllegalCount = 0;
+    // The target intent (switch/heal/revive/release/select) is now fulfilled — clear it so the
+    // NEXT time PARTY opens (a later reward, a later forced switch) starts from a clean intent.
+    // Leaving pendingApply/releasingForSwap set here was a real wedge: once optionsMode closes,
+    // handleParty falls through to the "no option menu yet" branch, re-derives `intent` from the
+    // stale flag, and — if the stale intent still resolves to the SAME already-acted-on slot —
+    // re-opens the identical options menu forever (never observed as a "stall" because the mode
+    // and cursor keep oscillating true/false, so the stall-detector's unchanged-key check never
+    // fires). Confirmed live: a Leftovers reward (pendingApply stays null → falls back to the
+    // "switch" intent) looped PARTY open/close indefinitely and the item was never held.
+    pendingApply = null;
+    releasingForSwap = false;
+    releaseSlot = -1;
+    awaitingPartyExit = true;
     await press(Button.ACTION, "party:select-option");
     return;
   }
@@ -598,6 +630,14 @@ async function handleParty(s: GameSnapshot): Promise<void> {
 
   // Wait for the handler to initialize (cursor becomes non-null).
   if (s.cursor == null) return;
+
+  // We already fired the terminal ACTION for an apply/release/switch THIS PARTY session and are
+  // waiting for the game to leave PARTY (e.g. applyModifier()'s setMode(MODIFIER_SELECT).then(...)
+  // hasn't resolved yet). Do nothing and let the next tick re-check — don't re-derive a target and
+  // press again: on a single-live-mon party that re-picks the SAME slot we just acted on, reopening
+  // its options menu (showOptions() resets optionsCursor to 0) and wedging PARTY open indefinitely.
+  // Confirmed live: a Leftovers reward looped open/close forever and the item was never held.
+  if (awaitingPartyExit) return;
 
   // Pick the target: releasing a passenger (Part B) → that exact slot; revive → a FAINTED mon;
   // heal → the MOST-HURT live mon; otherwise (a switch) → the HEALTHIEST live mon. The avoid set
