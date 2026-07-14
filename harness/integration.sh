@@ -12,7 +12,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PR="${POKEROGUE_SRC:-/home/user/pokerogue-src}"
+PR="${POKEROGUE_SRC:-$ROOT/../pokerogue-src}"
 DEST="$PR/test/tests/auto-ribbon"
 
 if [ ! -d "$PR/node_modules" ]; then
@@ -21,9 +21,21 @@ if [ ! -d "$PR/node_modules" ]; then
   exit 1
 fi
 
+# Browser-only entry points: DOM/HUD wiring and the hot-swap bundle entry points that
+# publish onto globalThis.__hostSeam / window.autoRibbon. Everything else in src/ is
+# portable game-logic that GameManager can drive headless.
+BROWSER_ONLY=(main hud policy-hot-entry strategy-hot-entry host-seam)
+
+# Wipe and re-stage every time so a file removed from src/ (or a leftover scratch test)
+# can't keep running silently from a prior stage.
+rm -rf "$DEST"
 mkdir -p "$DEST/bot"
-# Stage the current bot source (browser-only main.ts/hud.ts excluded) + the tests/helpers.
-cp "$ROOT"/src/{bridge,state,config,log,input,policy,typechart,catch,rewards,team,roster,orchestrator,candy,retry,safety,shop,settings}.ts "$DEST/bot/"
+for f in "$ROOT"/src/*.ts; do
+  name="$(basename "$f" .ts)"
+  skip=0
+  for b in "${BROWSER_ONLY[@]}"; do [ "$name" = "$b" ] && skip=1 && break; done
+  [ "$skip" -eq 1 ] || cp "$f" "$DEST/bot/"
+done
 cp "$ROOT"/tests/integration/*.ts "$DEST/"
 
 cd "$PR"
