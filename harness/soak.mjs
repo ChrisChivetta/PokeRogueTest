@@ -190,6 +190,14 @@ while (Date.now() < DEADLINE) {
       browser = await chromium.launch(launchOpts);
       page = await bootBot(browser);
     } catch (e2) { emit("relaunch-failed", { msg: String(e2.message).slice(0, 160) }); await new Promise((r) => setTimeout(r, 30_000)); }
+    // The fresh page's in-page bot module state (totalRetries, ribbon baseline, …) restarts at
+    // zero — any run/baseline tracked against the OLD page is now stale and unrecoverable, not
+    // just paused. Drop it rather than let a later "run-end" diff a post-crash counter against a
+    // pre-crash snapshot (this is exactly how retriesUsed went negative in every June soak file:
+    // run.retriesAt was captured before a crash, s.retries read fresh-post-crash, no reset here).
+    if (run) emit("run-abandoned-crash", { n: run.n });
+    inRun = false; run = null;
+    stats.ribbonsBaseline = null;
     continue;
   }
 
