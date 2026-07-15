@@ -12,9 +12,9 @@ One entry per change (kept or reverted). Numbers come from the soak `FINAL` bloc
 - **note:** <why kept/reverted; next idea>
 -->
 
-## YYYY-MM-DD — baseline (no change yet)
+## 2026-07-15 — baseline (no change yet)
 - **hypothesis:** establish where unmodified play dies.
-- **median death wave:** _ · **clears/wipes:** _/_ · **max wave:** _
-- **depth histogram:** 1-10:_ 11-25:_ 26-50:_ 51-100:_ 101-150:_ 151-199:_ 200+:_
-- **soak:** _h, _ runs · **commit:** (HEAD at soak start)
-- **note:** first real-FPS soak; baseline for everything below.
+- **median death wave:** 6   ·   **clears/wipes:** 0/82   ·   **max wave:** 15
+- **depth histogram:** 1-10:78 11-25:1 26-50:0 51-100:0 101-150:0 151-199:0 200+(clear):0
+- **soak:** headless, 82 seeded runs   ·   **commit:** 7734869
+- **note:** 82/100 seeds completed; batch 9 (seeds 90-99) was killed after 8+ min of CPU-bound looping on a caught-Pokemon party-full-release CONFIRM cycle (repeated PARTY<->CONFIRM UI-mode oscillation with no progress) — a real, newly-found wedge distinct from the PARTY-apply wedge fixed earlier this session, likely in the release-to-swap flow. Worth a Phase H2 investigation. This entry reflects the 82 seeds that completed cleanly.
