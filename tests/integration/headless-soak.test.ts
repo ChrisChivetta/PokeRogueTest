@@ -67,13 +67,21 @@ describe("auto-ribbon — headless soak (Phase H1)", () => {
       vi.spyOn(activeOverrides, "MYSTERY_ENCOUNTER_RATE_OVERRIDE", "get").mockReturnValue(null);
       game.override
         .ability(AbilityId.BALL_FETCH) // neutralize ability RNG; not what H1 is measuring
-        .seed(seed)
         .moveset([MoveId.WATER_GUN, MoveId.TACKLE]); // see fullrun-probe.test.ts: an unset
       // moveset can leave the starter with nothing usable ("has no moves left") and it Struggles
       // itself to death turn one — that's a test-fixture artifact, not a policy result, and would
       // corrupt every seed's distribution the same way. Fixed across seeds so the SEED is what
       // varies (wild encounters, crits, catch RNG), not the starter's moves.
       await game.classicMode.startBattle(SpeciesId.SQUIRTLE);
+      // Seed AFTER startBattle, not before: classicMode.startBattle() -> runToSummon() ->
+      // generateStarters() unconditionally hardcodes `scene.seed = "test"` (test/utils/
+      // game-manager-utils.ts) for framework-wide determinism, silently clobbering any earlier
+      // .seed() override — a seed set beforehand has ZERO effect on the run (verified: 3 wildly
+      // different seed strings all produced the identical wave-1 wild). Wave 1's encounter is
+      // therefore always the same regardless of seed; resetSeed() here makes wave 2+ genuinely
+      // diverge per seed, which is what a distribution needs.
+      game.override.seed(seed);
+      game.scene.resetSeed();
       attachBot(game.scene);
 
       const startedAt = Date.now();

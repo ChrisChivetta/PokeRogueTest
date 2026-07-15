@@ -53,11 +53,19 @@ describe("auto-ribbon — full-fidelity probe (Gate H0)", () => {
       // to Struggle from turn one ("has no moves left that it can use") — GameManager's default
       // fresh-starter moveset isn't reliably usable without an explicit override, unlike every
       // OTHER test in this suite, which always sets one. Give it a real attacking move so this
-      // probes harness/policy survival, not an empty-moveset artifact of my own test setup. A
-      // named seed lets this be re-run identically for a fair before/after once the policy
-      // changes.
-      game.override.seed("probe-d").moveset([MoveId.WATER_GUN, MoveId.TACKLE]);
+      // probes harness/policy survival, not an empty-moveset artifact of my own test setup.
+      game.override.moveset([MoveId.WATER_GUN, MoveId.TACKLE]);
       await game.classicMode.startBattle(SpeciesId.SQUIRTLE);
+      // Seed AFTER startBattle, not before: classicMode.startBattle() -> runToSummon() ->
+      // generateStarters() unconditionally hardcodes `scene.seed = "test"` (test/utils/
+      // game-manager-utils.ts) for framework-wide determinism, silently clobbering any earlier
+      // .seed() override — verified empirically (3 different seed strings all produced the
+      // identical wave-1 wild when set beforehand, as this test originally did). Named seed set
+      // HERE, after, lets this be re-run identically for a fair before/after once the policy
+      // changes — wave 1 is always the same "test"-seeded encounter regardless, but wave 2+
+      // genuinely diverges per seed once resetSeed() is called.
+      game.override.seed("probe-d");
+      game.scene.resetSeed();
       attachBot(game.scene);
 
       const startedAt = Date.now();
