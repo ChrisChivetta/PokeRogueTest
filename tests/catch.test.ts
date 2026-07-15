@@ -80,6 +80,25 @@ describe("catch — when to throw", () => {
     const next = s({ battle: { waveIndex: 6, isTrainer: false }, enemyParty: [foe({ speciesId: 4 })] });
     expect(shouldCatch(next)).toBe(true);
   });
+
+  it("doesn't reset the attempt budget when waveIndex/speciesId read null mid-target (June regression)", () => {
+    // A live June soak burned 141 balls on one Cascoon, "attempt 1" repeating forever — the old
+    // key included foe.name (which falls back to "?" on a failed read) and re-keyed on ANY change,
+    // so a single flaky tick (e.g. during the safety-halt/resume cycle) silently reset the budget.
+    const snap = s();
+    expect(shouldCatch(snap)).toBe(true); noteCatchAttempt();
+    expect(shouldCatch(snap)).toBe(true); noteCatchAttempt();
+
+    // A tick where the battle/foe read comes back unreadable (transient scene re-acquire) — must
+    // NOT be treated as "a new target": the budget already spent (2 attempts) has to survive it,
+    // so this still reads as "yes, keep going" rather than resetting back to a fresh "attempt 1".
+    const flaky = s({ battle: { waveIndex: null, isTrainer: false }, enemyParty: [foe({ speciesId: null })] });
+    expect(shouldCatch(flaky)).toBe(true);
+    noteCatchAttempt(); // 3rd attempt recorded even though this tick's read was unreadable
+
+    // Back to a clean read of the SAME target: the cap (3) is now hit — NOT reset to "attempt 1".
+    expect(shouldCatch(snap)).toBe(false);
+  });
 });
 
 describe("catch — ball selection", () => {

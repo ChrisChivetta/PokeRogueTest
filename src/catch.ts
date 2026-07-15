@@ -88,12 +88,21 @@ export function shouldCatch(s: GameSnapshot): boolean {
     if (!worthCatching(ctx)) return no("caught + not worth a swap");
   }
 
-  // Reset the counter whenever the target changes (new wave / new foe).
-  const key = `${b.waveIndex}:${foe.speciesId}:${foe.name}`;
-  if (key !== targetKey) {
-    targetKey = key;
-    attempts = 0;
-    softenTurns = 0;
+  // Reset the counter whenever the target changes (new wave / new foe). speciesId + waveIndex
+  // alone uniquely identify the target (name is redundant with speciesId and, unlike it, has a
+  // "?" fallback on a failed read — folding it in risked corrupting the key on a flaky tick).
+  // Only re-key on a CONFIDENT read of both fields: if either goes transiently null (a scene
+  // re-acquire during a safety-halt/resume, a mid-render tick, etc.) keep the existing key rather
+  // than treating "unreadable" as "a new target," which would silently reset attempts to 0 forever
+  // and let a run burn unlimited balls on what's actually the same foe (this exact pattern —
+  // "attempt 1" repeating for hundreds of throws — is what the June soak telemetry showed).
+  if (b.waveIndex != null && foe.speciesId != null) {
+    const key = `${b.waveIndex}:${foe.speciesId}`;
+    if (key !== targetKey) {
+      targetKey = key;
+      attempts = 0;
+      softenTurns = 0;
+    }
   }
   if (attempts >= config.catchAttemptsPerTarget) return no(`hit attempt cap (${attempts})`);
   lastDecision = `yes: ${foe.name} (${foe.speciesCaught === false ? "new species" : "un-ribboned"}), attempt ${attempts + 1}`;
