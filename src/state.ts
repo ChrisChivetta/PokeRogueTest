@@ -5,7 +5,7 @@
 // what the whole policy layer consumes — nothing above this file touches raw game
 // objects, so version drift is contained to here + bridge.ts.
 
-import { getScene, getUiModeName, getUiModeNumber, type UiModeName, type RawScene } from "./bridge";
+import { getScene, getUiModeName, getUiModeNumber, typeName, type UiModeName, type RawScene } from "./bridge";
 
 export interface MoveSnapshot {
   name: string;
@@ -18,6 +18,8 @@ export interface MoveSnapshot {
   accuracy: number | null;
   /** Index of this move in the Pokémon's moveset (the value FIGHT cursor selects). */
   index: number;
+  /** False if the move can't be selected right now (disabled, out of PP, Taunt/Torment, etc.). */
+  usable: boolean;
 }
 
 export interface PokemonSnapshot {
@@ -39,6 +41,15 @@ export interface PokemonSnapshot {
   moves: MoveSnapshot[];
   /** True if this mon is currently on the field (not benched). */
   onField: boolean;
+  /** True if this is a boss (segmented shield bar). Enemy-only signal; false otherwise. */
+  isBoss: boolean;
+  /** Remaining boss shield index: 0 === last segment (the only catchable one). null if not a boss. */
+  bossSegmentIndex: number | null;
+  /**
+   * Whether this SPECIES is already recorded in the Pokédex (caughtAttr set). Enemy-only;
+   * null on the player side / when unreadable. `false` => catching it unlocks a new starter.
+   */
+  speciesCaught: boolean | null;
 }
 
 export interface BattleSnapshot {
@@ -51,7 +62,18 @@ export interface BattleSnapshot {
   isBossWave: boolean;
   /** True if a trainer object is present (trainer battle). */
   isTrainer: boolean;
+  /** True on a deterministic RIVAL wave (8/25/55/95/145/195) — heal to full before these. */
+  isRivalWave: boolean;
+  /**
+   * True when the NEXT wave is a deterministic rival (current waveIndex+1 ∈ RIVAL_WAVES). The
+   * post-wave reward/shop screen appears BEFORE the wave counter advances, so this — not
+   * isRivalWave — is the flag the shop must read to bank revives/heals and enter the rival at full.
+   */
+  isPreRivalWave: boolean;
 }
+
+/** Deterministic Classic rival waves (ClassicFixedBossWaves: RIVAL_1..RIVAL_6). Heal to full first. */
+export const RIVAL_WAVES: ReadonlySet<number> = new Set([8, 25, 55, 95, 145, 195]);
 
 export interface GameSnapshot {
   ready: boolean;
@@ -68,7 +90,8 @@ export interface GameSnapshot {
   battle: BattleSnapshot | null;
   playerParty: PokemonSnapshot[];
   enemyParty: PokemonSnapshot[];
-  biomeType: number | null;
+  /** Current biome as a BiomeId enum number (from arena.biomeId); null if unreadable. */
+  biomeId: number | null;
   money: number | null;
   /** Pokéball counts by ball-tier index, if readable. */
   pokeballCounts: number[] | null;
@@ -103,17 +126,16 @@ function readName(p: any): string {
   );
 }
 
-/** Lowercased type strings. The game exposes types via getTypes() or .type1/.type2. */
+/** Lowercased type strings. The game exposes types via getTypes() (PokemonType enum
+ *  numbers) or .type1/.type2. typeName() maps the numbers to readable names. */
 function readTypes(p: any): string[] {
   const viaGetter = tryCall<any[]>(p, "getTypes");
   const raw = Array.isArray(viaGetter) ? viaGetter : [p?.type1, p?.type2];
   const out: string[] = [];
   for (const t of raw) {
     if (t == null) continue;
-    // t may be an enum number, a string, or an object with a name.
-    const s =
-      typeof t === "string" ? t : str(t?.name) ?? (typeof t === "number" ? String(t) : null);
-    if (s) out.push(s.toLowerCase());
+    const s = typeName(t);
+    if (s && s !== "unknown") out.push(s);
   }
   return out;
 }
@@ -125,17 +147,25 @@ function readMoves(p: any): MoveSnapshot[] {
     if (!m) return;
     // A PokemonMove wraps the static move data, reachable via getMove() or .getMove.
     const md = tryCall<any>(m, "getMove") ?? m?.move ?? m;
-    const typeRaw = md?.type;
-    const type =
-      typeof typeRaw === "string"
-        ? typeRaw.toLowerCase()
-        : str(typeRaw?.name)?.toLowerCase() ?? (typeof typeRaw === "number" ? String(typeRaw) : null);
+    const type = typeName(md?.type);
     // Remaining PP: a PokemonMove tracks `ppUsed`; base PP lives on the move data
     // (`md.pp`) or as an explicit cap on the wrapper. Remaining = max - used.
     const ppMax = num(md?.pp) ?? num(m?.ppMax);
     const ppUsed = num(m?.ppUsed);
     const ppRemaining =
       ppMax != null && ppUsed != null ? ppMax - ppUsed : num(m?.pp); // fallback: explicit pp field
+    // Can this move be picked right now? PokemonMove.isUsable(pokemon, ignorePp, forSelection)
+    // returns [usable, reason] — false for disabled / 0-PP / Taunt/Torment, exactly what the FIGHT
+    // menu greys out. Default to usable if it can't be read (don't hide a valid move).
+    let usable = true;
+    try {
+      if (typeof m.isUsable === "function") {
+        const res = m.isUsable(p, false, true);
+        if (Array.isArray(res)) usable = res[0] !== false;
+      }
+    } catch {
+      /* version drift */
+    }
     out.push({
       name: str(md?.name) ?? str(tryCall<string>(md, "getName")) ?? "?",
       pp: ppRemaining,
@@ -144,12 +174,13 @@ function readMoves(p: any): MoveSnapshot[] {
       power: num(md?.power),
       accuracy: num(md?.accuracy),
       index,
+      usable,
     });
   });
   return out;
 }
 
-function readPokemon(p: any, onField: boolean): PokemonSnapshot {
+function readPokemon(p: any, onField: boolean, speciesCaught: boolean | null = null): PokemonSnapshot {
   const maxHp = num(tryCall<number>(p, "getMaxHp")) ?? num(p?.getMaxHp ? undefined : p?.stats?.[0]) ?? num(p?.maxHp);
   const hp = num(p?.hp);
   const ratioViaGetter = num(tryCall<number>(p, "getHpRatio"));
@@ -174,7 +205,27 @@ function readPokemon(p: any, onField: boolean): PokemonSnapshot {
     ability: str(tryCall<any>(p, "getAbility")?.name) ?? str(p?.getAbility ? undefined : p?.ability?.name),
     moves: readMoves(p),
     onField,
+    isBoss: tryCall<boolean>(p, "isBoss") === true,
+    bossSegmentIndex: tryCall<boolean>(p, "isBoss") === true ? num(p?.bossSegmentIndex) : null,
+    speciesCaught,
   };
+}
+
+/**
+ * Normalize the game's `pokeballCounts` into a dense number[] indexed by PokeballType
+ * (POKE=0, GREAT=1, ULTRA=2, ROGUE=3, MASTER=4). The game stores it as a `Record<PokeballType,
+ * number>` — a plain object keyed by the numeric enum value ({0:5,1:0,…}) — so a naive
+ * `Array.isArray` check misses it and the bot thinks it has no balls. Accept the object form
+ * (the real shape), an actual array (defensive), and null (pre-init). Exported for unit tests.
+ */
+export function readPokeballCounts(raw: unknown): number[] | null {
+  if (raw == null || typeof raw !== "object") return null;
+  // Both arrays and the keyed object are read positionally 0..4; arrays already index that way,
+  // and the object's numeric keys ("0".."4") are read via bracket access.
+  const src = raw as Record<string | number, unknown>;
+  const out: number[] = [];
+  for (let i = 0; i <= 4; i++) out[i] = num(src[i]) ?? 0;
+  return out;
 }
 
 function readParty(scene: RawScene, side: "player" | "enemy"): PokemonSnapshot[] {
@@ -187,7 +238,18 @@ function readParty(scene: RawScene, side: "player" | "enemy"): PokemonSnapshot[]
       ? tryCall<any[]>(scene, "getPlayerField") ?? []
       : tryCall<any[]>(scene, "getEnemyField") ?? [];
   const fieldSet = new Set(field.filter(Boolean));
-  return (Array.isArray(party) ? party : []).filter(Boolean).map((p) => readPokemon(p, fieldSet.has(p)));
+  // Pokédex lookup (enemy side only): has this species been caught before? Drives the
+  // "catch new species to unlock a starter" policy. caughtAttr is a bigint (0n => never caught).
+  const dex: any = side === "enemy" ? scene?.gameData?.dexData : null;
+  const caughtOf = (p: any): boolean | null => {
+    if (!dex) return null;
+    const id = p?.species?.speciesId;
+    if (typeof id !== "number") return null;
+    return !!dex[id]?.caughtAttr;
+  };
+  return (Array.isArray(party) ? party : [])
+    .filter(Boolean)
+    .map((p) => readPokemon(p, fieldSet.has(p), caughtOf(p)));
 }
 
 function readBattle(scene: RawScene): BattleSnapshot | null {
@@ -201,6 +263,8 @@ function readBattle(scene: RawScene): BattleSnapshot | null {
     battleType: num(b?.battleType),
     isBossWave: waveIndex != null && waveIndex % 10 === 0,
     isTrainer: !!b?.trainer,
+    isRivalWave: waveIndex != null && RIVAL_WAVES.has(waveIndex),
+    isPreRivalWave: waveIndex != null && RIVAL_WAVES.has(waveIndex + 1),
   };
 }
 
@@ -220,16 +284,18 @@ export function readState(): GameSnapshot {
       battle: null,
       playerParty: [],
       enemyParty: [],
-      biomeType: null,
+      biomeId: null,
       money: null,
       pokeballCounts: null,
     };
   }
 
   const handler = tryCall<any>(scene?.ui, "getHandler");
-  const pokeballCounts = Array.isArray(scene?.pokeballCounts)
-    ? scene.pokeballCounts.map((n: unknown) => num(n) ?? 0)
-    : null;
+  // pokeballCounts is a `Record<PokeballType, number>` at runtime — a PLAIN OBJECT keyed by the
+  // enum index ({0:5,1:0,2:0,3:0,4:0}), NOT an array. The old `Array.isArray` read returned null,
+  // so the bot believed it had zero balls and never threw one ("no balls in stock"). Normalize
+  // either shape into a dense number[] indexed POKE(0)…MASTER(4) for catch.ts to scan.
+  const pokeballCounts = readPokeballCounts(scene?.pokeballCounts);
 
   return {
     ready: true,
@@ -240,7 +306,7 @@ export function readState(): GameSnapshot {
     battle: readBattle(scene),
     playerParty: readParty(scene, "player"),
     enemyParty: readParty(scene, "enemy"),
-    biomeType: num(scene?.arena?.biomeType),
+    biomeId: num(scene?.arena?.biomeId) ?? num(scene?.arena?.biomeType),
     money: num(scene?.money),
     pokeballCounts,
   };

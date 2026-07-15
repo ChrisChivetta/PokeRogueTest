@@ -1,0 +1,810 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// Capture intended presses instead of sending them.
+const rec = vi.hoisted(() => ({ presses: [] as string[] }));
+vi.mock("../src/input", () => ({
+  press: vi.fn(async (btn: number, why?: string) => { rec.presses.push(`${btn}:${why ?? ""}`); return true; }),
+  moveCursor2x2: vi.fn(async (from: number, to: number) => { rec.presses.push(`nav:${from}->${to}`); }),
+  sleep: vi.fn(async () => {}),
+}));
+
+// Control the live handler (PARTY / ME internals) while keeping the real Button values.
+const hRef = vi.hoisted(() => ({ current: null as any }));
+const meRef = vi.hoisted(() => ({ current: null as any }));
+// Control the current phase + learn-move candidate (drives the LearnMovePhase flow).
+const phaseRef = vi.hoisted(() => ({ current: null as string | null }));
+const learnRef = vi.hoisted(() => ({ current: null as any }));
+vi.mock("../src/bridge", async (orig) => {
+  const actual = await orig<typeof import("../src/bridge")>();
+  return {
+    ...actual,
+    getActiveHandler: () => hRef.current,
+    getMysteryEncounter: () => meRef.current,
+    inMysteryEncounter: () => meRef.current != null,
+    getCurrentPhaseName: () => phaseRef.current,
+    getLearnMoveCandidate: () => learnRef.current,
+  };
+});
+
+// Control the party-value reader (Part B release decision) without a live scene.
+const partyVal = vi.hoisted(() => ({ current: [] as any[] }));
+vi.mock("../src/roster", () => ({
+  readPartyValue: () => partyVal.current,
+  readCatchContext: () => null,
+  readRoster: () => [],
+  readCandyStarters: () => [],
+}));
+
+import { resetPolicy, step, pickPartyTarget } from "../src/policy";
+import { getPolicy, setPolicy, resetPolicyRegistry } from "../src/policy-registry";
+import { resetRetry, noteRetry } from "../src/retry";
+import type { GameSnapshot } from "../src/state";
+
+const snap = (o: Partial<GameSnapshot>): GameSnapshot =>
+  ({ ready: true, uiMode: "MESSAGE", uiModeNumber: 0, cursor: 0, awaitingActionInput: false,
+     battle: null, playerParty: [], enemyParty: [], biomeType: null, money: null, pokeballCounts: null,
+     ...o } as GameSnapshot);
+const p = (o: any) => ({ name: "p", fainted: false, hpRatio: 1, onField: false, types: [], moves: [], ...o });
+
+// Button values (from bridge): UP0 DOWN1 LEFT2 RIGHT3 SUBMIT4 ACTION5 CANCEL6
+beforeEach(() => {
+  rec.presses = []; hRef.current = null; meRef.current = null;
+  phaseRef.current = null; learnRef.current = null;
+  resetPolicy(); resetRetry();
+});
+
+// Build a fake MysteryEncounterUiHandler. `modes`/`reqs` describe each option; cursor is
+// the current grid position. Mirrors the real handler's getCursor()/encounterOptions/
+// optionsMeetsReqs shape (see src/ui/handlers/mystery-encounter-ui-handler.ts).
+const meHandler = (modes: number[], reqs: boolean[], cursor = 0) => ({
+  encounterOptions: modes.map((optionMode) => ({ optionMode })),
+  optionsMeetsReqs: reqs,
+  getCursor: () => cursor,
+});
+
+describe("policy routing", () => {
+  it("does nothing when not ready", async () => {
+    await step(snap({ ready: false }));
+    expect(rec.presses).toEqual([]);
+  });
+
+  it("COMMAND with cursor on FIGHT just confirms", async () => {
+    await step(snap({ uiMode: "COMMAND", cursor: 0 }));
+    expect(rec.presses).toEqual(["5:command:fight"]);
+  });
+
+  it("COMMAND moves the cursor to FIGHT first", async () => {
+    await step(snap({ uiMode: "COMMAND", cursor: 2 }));
+    expect(rec.presses).toEqual(["nav:2->0", "5:command:fight"]);
+  });
+
+  it("COMMAND opens the BALL menu when a low-HP new species is catchable", async () => {
+    // Low HP (≤ catchHpThreshold) → past the soften gate, throw straight away.
+    const wildFoe = p({ onField: true, speciesId: 25, speciesCaught: false, isBoss: false, bossSegmentIndex: null, hpRatio: 0.2 });
+    await step(snap({
+      uiMode: "COMMAND", cursor: 0, enemyParty: [wildFoe], pokeballCounts: [5, 0, 0, 0, 0],
+      battle: { waveIndex: 5, isTrainer: false } as any,
+    }));
+    expect(rec.presses).toEqual(["nav:0->1", "5:command:ball"]); // 1 = BALL
+  });
+
+  it("COMMAND softens (FIGHTs) a full-HP catch target before throwing", async () => {
+    // Full HP (> catchHpThreshold) on a catchable wild → attack to lower HP first, don't throw yet.
+    const wildFoe = p({ onField: true, speciesId: 25, speciesCaught: false, isBoss: false, bossSegmentIndex: null, hpRatio: 1 });
+    await step(snap({
+      uiMode: "COMMAND", cursor: 1, enemyParty: [wildFoe], pokeballCounts: [5, 0, 0, 0, 0],
+      battle: { waveIndex: 5, isTrainer: false } as any,
+    }));
+    expect(rec.presses).toEqual(["nav:1->0", "5:command:fight-soften"]); // 0 = FIGHT (soften)
+  });
+
+  // FIGHT anti-wedge: a move that ranking thinks is usable but the game keeps REJECTING (disabled /
+  // out-of-PP that isUsable() mis-read) must not pin us forever re-selecting it. After a couple of
+  // same-index presses with no turn progress we rotate to the next-ranked move (worst case slot 0).
+  const fightLead = (o: any = {}) =>
+    p({ onField: true, types: ["normal"],
+        moves: [
+          { index: 0, power: 100, type: "normal", accuracy: 100, pp: 10, usable: true },
+          { index: 1, power: 50, type: "normal", accuracy: 100, pp: 10, usable: true },
+        ], ...o });
+  const fightSnap = () => snap({ uiMode: "FIGHT", cursor: 0, playerParty: [fightLead()], enemyParty: [p({ onField: true, types: ["normal"] })] });
+
+  it("FIGHT picks the best-ranked move (move 0) on the first press", async () => {
+    await step(fightSnap());
+    expect(rec.presses).toEqual(["5:fight:move0"]);
+  });
+
+  it("FIGHT rotates off a move the game keeps rejecting (anti-wedge)", async () => {
+    // Press the same best move twice (it's secretly disabled, so the turn never advances)…
+    await step(fightSnap());
+    await step(fightSnap());
+    rec.presses = [];
+    // …on the 3rd consecutive press it must SKIP to the next-ranked move (idx 1).
+    await step(fightSnap());
+    expect(rec.presses).toEqual(["nav:0->1", "5:fight:move1(skip1)"]);
+  });
+
+  it("FIGHT forgets the reject streak once the turn advances (a COMMAND tick resets it)", async () => {
+    await step(fightSnap());
+    await step(fightSnap());
+    await step(fightSnap()); // now rotated off move 0
+    await step(snap({ uiMode: "COMMAND", cursor: 0 })); // turn resolved → new turn
+    rec.presses = [];
+    await step(fightSnap()); // fresh turn → back to the best move, no skip
+    expect(rec.presses).toEqual(["5:fight:move0"]);
+  });
+
+  it("EVOLUTION_SCENE WAITS (no press) while the animation plays — never masks", async () => {
+    // Passive animation scene. The handler only accepts ACTION at the trailing prompt; mashing it
+    // mid-animation races the phase system into a permanent wedge. So with no prompt we sit still.
+    await step(snap({ uiMode: "EVOLUTION_SCENE", cursor: 0, awaitingActionInput: false }));
+    expect(rec.presses).toEqual([]); // wait — let the animation finish
+  });
+
+  it("EVOLUTION_SCENE presses ACTION only once the trailing prompt awaits input", async () => {
+    await step(snap({ uiMode: "EVOLUTION_SCENE", cursor: 0, awaitingActionInput: true }));
+    expect(rec.presses).toEqual(["5:evolution:advance"]); // clear the "X evolved!" prompt
+  });
+
+  it("EGG_HATCH_SCENE WAITS (no press) while the hatch plays", async () => {
+    await step(snap({ uiMode: "EGG_HATCH_SCENE", cursor: 0, awaitingActionInput: false }));
+    expect(rec.presses).toEqual([]);
+  });
+
+  it("EGG_HATCH_SCENE presses ACTION at the trailing prompt", async () => {
+    await step(snap({ uiMode: "EGG_HATCH_SCENE", cursor: 0, awaitingActionInput: true }));
+    expect(rec.presses).toEqual(["5:egg-hatch:advance"]);
+  });
+
+  it("EGG_HATCH_SUMMARY presses CANCEL to exit the summary", async () => {
+    // The egg summary only exits on CANCEL (6); an early press no-ops behind its blockExit window.
+    await step(snap({ uiMode: "EGG_HATCH_SUMMARY", cursor: 0 }));
+    expect(rec.presses).toEqual(["6:egg-summary:exit"]);
+  });
+
+  it("BALL walks to the chosen tier and throws", async () => {
+    // Cheapest available is Great (index 1) since Poké is empty; from cursor 0 → DOWN, then throw.
+    await step(snap({ uiMode: "BALL", cursor: 0, enemyParty: [p({ onField: true })],
+      pokeballCounts: [0, 2, 0, 0, 0] }));
+    expect(rec.presses).toEqual(["1:ball:down"]);
+    rec.presses = [];
+    await step(snap({ uiMode: "BALL", cursor: 1, enemyParty: [p({ onField: true })],
+      pokeballCounts: [0, 2, 0, 0, 0] }));
+    expect(rec.presses).toEqual(["5:ball:throw1"]);
+  });
+
+  it("FIGHT navigates to and selects the best move", async () => {
+    const lead = p({ onField: true, types: ["grass"], moves: [
+      { index: 0, type: "normal", power: 40, pp: 10 },
+      { index: 1, type: "water", power: 55, pp: 10 }, // 2x vs ground
+    ]});
+    const foe = p({ onField: true, types: ["ground"] });
+    await step(snap({ uiMode: "FIGHT", cursor: 0, playerParty: [lead], enemyParty: [foe] }));
+    expect(rec.presses).toEqual(["nav:0->1", "5:fight:move1"]);
+  });
+
+  it("FIGHT varies the move on a retry (picks the 2nd-best after a loss)", async () => {
+    const lead = p({ onField: true, types: ["grass"], moves: [
+      { index: 0, type: "normal", power: 40, pp: 10 },
+      { index: 1, type: "water", power: 55, pp: 10 }, // best vs ground
+    ]});
+    const foe = p({ onField: true, types: ["ground"] });
+    noteRetry(); // generation 1 → take the 2nd-best move instead of replaying the best
+    await step(snap({ uiMode: "FIGHT", cursor: 0, playerParty: [lead], enemyParty: [foe] }));
+    expect(rec.presses).toEqual(["5:fight:move0"]); // 2nd-best is move 0; cursor already there
+  });
+
+  it("MODIFIER_SELECT takes the reward when the row is unreadable", async () => {
+    await step(snap({ uiMode: "MODIFIER_SELECT" }));
+    expect(rec.presses).toEqual(["5:reward:take"]); // no handler options → take highlighted
+  });
+
+  const rewardHandler = (ids: string[], rowCursor = 1) => ({
+    rowCursor,
+    options: ids.map((id) => ({ modifierTypeOption: { type: { id, tier: 1 } } })),
+  });
+
+  it("MODIFIER_SELECT navigates to the highest-priority reward and takes it", async () => {
+    hRef.current = rewardHandler(["MULTI_LENS", "REVIVER_SEED", "TM_COMMON"]); // best = index 1
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0 }));
+    expect(rec.presses).toEqual(["3:reward:nav-right"]); // RIGHT toward column 1
+    rec.presses = [];
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 1 }));
+    expect(rec.presses).toEqual(["5:reward:take-best"]);
+  });
+
+  it("MODIFIER_SELECT climbs from the button row to the rewards row first", async () => {
+    hRef.current = rewardHandler(["LEFTOVERS"], 0); // cursor parked on the bottom button row
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0 }));
+    expect(rec.presses).toEqual(["0:reward:to-rewards-row"]); // UP to reach the rewards row
+  });
+
+  it("MODIFIER_SELECT skips a row of only-harmful items", async () => {
+    hRef.current = rewardHandler(["TOXIC_ORB", "FLAME_ORB"]);
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0 }));
+    expect(rec.presses).toEqual(["6:reward:skip-bad"]);
+    rec.presses = [];
+    await step(snap({ uiMode: "CONFIRM" })); // the skip confirmation is accepted, not declined
+    expect(rec.presses).toEqual(["5:confirm:accept-skip"]);
+  });
+
+  it("advances dialogue only when awaiting input", async () => {
+    await step(snap({ uiMode: "MESSAGE", awaitingActionInput: true }));
+    expect(rec.presses).toEqual(["5:advance"]);
+    rec.presses = [];
+    await step(snap({ uiMode: "MESSAGE", awaitingActionInput: false }));
+    expect(rec.presses).toEqual([]); // don't mash plain messages
+  });
+
+  it("declines CONFIRM and backs out of a stray SUMMARY", async () => {
+    await step(snap({ uiMode: "CONFIRM" }));
+    expect(rec.presses).toEqual(["6:confirm:decline"]);
+    rec.presses = [];
+    await step(snap({ uiMode: "SUMMARY" }));
+    expect(rec.presses).toEqual(["6:summary:back"]);
+  });
+});
+
+describe("LearnMovePhase flow", () => {
+  // A learn candidate the scorer will ACCEPT (strong STAB), replacing slot 1.
+  const acceptCandidate = () => ({
+    candidate: { name: "Flamethrower", type: "fire", power: 90, accuracy: 100 },
+    currentMoves: [
+      { name: "Ember", type: "fire", power: 40, accuracy: 100 },
+      { name: "Tackle", type: "normal", power: 40, accuracy: 100 },
+      { name: "Scratch", type: "normal", power: 40, accuracy: 100 },
+      { name: "Bite", type: "dark", power: 60, accuracy: 100 },
+    ],
+    userTypes: ["fire"],
+  });
+  // A learn candidate the scorer will DECLINE (weak, beaten by every slot).
+  const declineCandidate = () => ({
+    candidate: { name: "Tackle", type: "normal", power: 40, accuracy: 100 },
+    currentMoves: [
+      { name: "Flamethrower", type: "fire", power: 90, accuracy: 100 },
+      { name: "Surf", type: "water", power: 90, accuracy: 100 },
+      { name: "Thunderbolt", type: "electric", power: 90, accuracy: 100 },
+      { name: "Ice Beam", type: "ice", power: 90, accuracy: 100 },
+    ],
+    userTypes: ["fire"],
+  });
+
+  it("routes a MESSAGE under LearnMovePhase to advance (not silent)", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = acceptCandidate();
+    await step(snap({ uiMode: "MESSAGE", awaitingActionInput: false }));
+    expect(rec.presses).toEqual(["5:learn:advance"]);
+  });
+
+  it("accepts the swap at CONFIRM (ACTION), then forgets the chosen slot at SUMMARY", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = acceptCandidate(); // weakest of the set → replace a 40-power normal slot
+    // CONFIRM "should it forget a move?" → yes (ACTION)
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 }));
+    expect(rec.presses).toEqual(["5:learn:replace-yes"]);
+    rec.presses = [];
+    // SUMMARY: the move-row selector (moveCursor) starts at 4 and is INTERNAL to the game —
+    // the bridge's s.cursor is the summary PAGE (a constant 2 = Page.MOVES), so we pin it
+    // here and prove the policy reaches the target slot purely via its own tracked counter.
+    for (let i = 0; i < 8; i++) {
+      await step(snap({ uiMode: "SUMMARY", cursor: 2 }));
+      const last = rec.presses[rec.presses.length - 1];
+      if (last.startsWith("5:learn:forget-slot")) break; // landed + confirmed
+    }
+    const final = rec.presses[rec.presses.length - 1];
+    expect(final).toMatch(/^5:learn:forget-slot[123]$/);
+    // It should NOT have wedged spamming one direction: a few nav presses then ACTION.
+    expect(rec.presses.length).toBeLessThanOrEqual(5);
+  });
+
+  it("declines at CONFIRM (CANCEL), then says yes to the stop-teaching follow-up", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = declineCandidate();
+    // First CONFIRM: the "forget a move?" prompt → no (CANCEL), arms learnDeclined.
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 }));
+    expect(rec.presses).toEqual(["6:learn:replace-no"]);
+    rec.presses = [];
+    // Second CONFIRM: the "stop teaching?" follow-up → yes (ACTION) to end the phase.
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 }));
+    expect(rec.presses).toEqual(["5:learn:stop-teaching"]);
+  });
+
+  it("a declined SUMMARY confirms slot 4 (don't learn) immediately — moveCursor starts at 4", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = declineCandidate();
+    // moveCursor enters at 4 (the "don't learn" row) and the decline target IS 4, so the very
+    // first SUMMARY tick should ACTION-confirm with no navigation — and crucially must not
+    // spin pressing DOWN against the constant page cursor (the old wedge).
+    await step(snap({ uiMode: "SUMMARY", cursor: 2 }));
+    expect(rec.presses).toEqual(["5:learn:slot-skip"]);
+  });
+
+  it("never wedges spamming DOWN on SUMMARY when s.cursor (the page) is pinned at 2", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = acceptCandidate(); // target is a 0-3 forget slot, reached via nav
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 })); // ACTION → enter SUMMARY
+    rec.presses = [];
+    for (let i = 0; i < 12; i++) {
+      await step(snap({ uiMode: "SUMMARY", cursor: 2 })); // page cursor NEVER changes
+      if (rec.presses.at(-1)?.startsWith("5:learn:forget-slot")) break;
+    }
+    // Terminated with a forget ACTION, not an unbounded DOWN spam.
+    expect(rec.presses.at(-1)).toMatch(/^5:learn:forget-slot[123]$/);
+    const downs = rec.presses.filter((p) => p.startsWith("1:learn:slot-down")).length;
+    expect(downs).toBeLessThanOrEqual(3);
+  });
+
+  it("re-seeds the SUMMARY moveCursor on re-entry so a stale counter can't wedge DOWN/UP forever", async () => {
+    // The "SUMMARY:LearnMovePhase" wedge: the tracked learnMoveCursor is module state. If we step it
+    // partway during one SUMMARY visit and then LEAVE the summary (a MESSAGE/CONFIRM tick), the game
+    // resets the on-screen highlight to 4 — but a stale counter would be out of sync, so our
+    // shortest-wrap stepping could never land on the target and we'd spam DOWN/UP. The fix drops the
+    // counter on any non-SUMMARY tick so the NEXT SUMMARY re-seeds at 4.
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = acceptCandidate(); // target is a forget slot reached via navigation
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 })); // ACTION → enter SUMMARY
+    rec.presses = [];
+    // Take ONE SUMMARY step (advances the tracked counter off its 4 seed), then bounce out to a
+    // MESSAGE tick (which the fix uses to reset the counter), then come back to SUMMARY.
+    await step(snap({ uiMode: "SUMMARY", cursor: 2 }));
+    await step(snap({ uiMode: "MESSAGE", cursor: 0 })); // leaves SUMMARY → counter must reset
+    rec.presses = [];
+    // Fresh SUMMARY: with the counter honestly re-seeded at 4, it lands within a few steps (never
+    // an unbounded spin), then ACTION-confirms the forget slot.
+    for (let i = 0; i < 8; i++) {
+      await step(snap({ uiMode: "SUMMARY", cursor: 2 }));
+      if (rec.presses.at(-1)?.startsWith("5:learn:forget-slot")) break;
+    }
+    expect(rec.presses.at(-1)).toMatch(/^5:learn:forget-slot[123]$/);
+    // No unbounded nav: a couple of steps at most before it lands.
+    const navs = rec.presses.filter((q) => q.startsWith("1:learn:slot-down") || q.startsWith("0:learn:slot-up")).length;
+    expect(navs).toBeLessThanOrEqual(3);
+  });
+
+  it("waits for the CONFIRM handler to initialize (null cursor) before deciding", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = acceptCandidate();
+    await step(snap({ uiMode: "CONFIRM", cursor: null as any }));
+    expect(rec.presses).toEqual([]); // no input until the confirm menu is ready
+  });
+
+  it("falls back to a safe decline when the candidate is unreadable", async () => {
+    phaseRef.current = "LearnMovePhase";
+    learnRef.current = null; // bridge could not read the move
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 }));
+    expect(rec.presses).toEqual(["6:learn:replace-no"]); // decline, never blind-accept
+  });
+
+  it("does not hijack a normal CONFIRM when the phase is not LearnMovePhase", async () => {
+    phaseRef.current = "SomeOtherPhase";
+    await step(snap({ uiMode: "CONFIRM", cursor: 0 }));
+    expect(rec.presses).toEqual(["6:confirm:decline"]); // the generic decline path
+  });
+});
+
+describe("PARTY option targeting (the previously-buggy path)", () => {
+  it("navigates the option cursor to SEND_OUT, not the first option (SUMMARY)", async () => {
+    hRef.current = { optionsMode: true, options: [6, 0, -1], optionsCursor: 0 }; // [SUMMARY, SEND_OUT, CANCEL]
+    await step(snap({ uiMode: "PARTY" }));
+    expect(rec.presses).toEqual(["1:party:opt-down"]); // DOWN toward SEND_OUT at index 1
+  });
+
+  it("confirms when the option cursor is already on SEND_OUT", async () => {
+    hRef.current = { optionsMode: true, options: [0, 6, -1], optionsCursor: 0 };
+    await step(snap({ uiMode: "PARTY" }));
+    expect(rec.presses).toEqual(["5:party:select-option"]);
+  });
+
+  it("targets APPLY for a reward when SEND_OUT is absent", async () => {
+    hRef.current = { optionsMode: true, options: [6, 3], optionsCursor: 1 }; // [SUMMARY, APPLY]
+    await step(snap({ uiMode: "PARTY" }));
+    expect(rec.presses).toEqual(["5:party:select-option"]); // already on APPLY (index 1)
+  });
+
+  it("abandons a reward whose target menu offers neither SEND_OUT nor APPLY (e.g. a TM)", async () => {
+    hRef.current = { optionsMode: true, options: [4, 6, -1], optionsCursor: 0 }; // [TEACH, SUMMARY, CANCEL]
+    await step(snap({ uiMode: "PARTY" }));
+    expect(rec.presses).toEqual(["6:party:abandon-options"]);
+  });
+
+  it("after abandoning, skips the reward at MODIFIER_SELECT (CANCEL then accept the confirm)", async () => {
+    // 1) abandon the TM target menu → sets the skip flag
+    hRef.current = { optionsMode: true, options: [4, -1], optionsCursor: 0 };
+    await step(snap({ uiMode: "PARTY" }));
+    rec.presses = [];
+    // 2) at the reward screen we now CANCEL (open "skip?")
+    await step(snap({ uiMode: "MODIFIER_SELECT" }));
+    expect(rec.presses).toEqual(["6:reward:skip"]);
+    rec.presses = [];
+    // 3) the skip confirmation is ACCEPTED (not declined like a learn-move confirm)
+    await step(snap({ uiMode: "CONFIRM" }));
+    expect(rec.presses).toEqual(["5:confirm:accept-skip"]);
+  });
+
+  it("opens options on the healthiest usable member", async () => {
+    hRef.current = { optionsMode: false };
+    const party = [p({ fainted: true, hpRatio: 0 }), p({ hpRatio: 0.8 })];
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: party }));
+    // healthiest non-fainted is index 1 → move DOWN toward it
+    expect(rec.presses).toEqual(["1:party:nav"]);
+  });
+
+  it("a forced SwitchPhase picks a healthy mon even with a stale reward-skip flag set", async () => {
+    // Repro of the live "2:PARTY:SwitchPhase" wedge: an earlier unusable-reward menu sets the
+    // skipNextReward flag (it CANCELs out of a reward target it can't use), then a mon faints and
+    // SwitchPhase force-opens PARTY. The stale flag must NOT make us spam an ineffective CANCEL.
+    phaseRef.current = "MoveEndPhase";
+    hRef.current = { optionsMode: true, options: [4, -1], optionsCursor: 0 }; // TEACH-only → unusable
+    await step(snap({ uiMode: "PARTY" }));
+    expect(rec.presses.at(-1)).toBe("6:party:abandon-options"); // sets skipNextReward
+    rec.presses = [];
+
+    // Now a mon faints → forced switch. Slot 0 fainted, slot 1 healthy.
+    phaseRef.current = "SwitchPhase";
+    hRef.current = { optionsMode: false };
+    const party = [p({ fainted: true, hpRatio: 0 }), p({ hpRatio: 0.9 })];
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: party }));
+    // Must navigate toward the healthy mon (index 1), NOT CANCEL/exit-to-skip.
+    expect(rec.presses).toEqual(["1:party:nav"]);
+  });
+
+  it("opens the option menu once the cursor is on the chosen member", async () => {
+    hRef.current = { optionsMode: false };
+    const party = [p({ hpRatio: 1 }), p({ hpRatio: 0.3 })];
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: party }));
+    expect(rec.presses).toEqual(["5:party:open-options"]); // index 0 is healthiest, cursor already there
+  });
+
+  it("selects the chosen member for a mystery-encounter secondary pick (SELECT, not abandon)", async () => {
+    meRef.current = { encounterType: 8 }; // inside an encounter (Field Trip)
+    // PartyUiMode.SELECT menu: [SELECT(13), SUMMARY(6), CANCEL(-1)], cursor on SELECT.
+    hRef.current = { optionsMode: true, options: [13, 6, -1], optionsCursor: 0 };
+    await step(snap({ uiMode: "PARTY" }));
+    expect(rec.presses).toEqual(["5:party:select-option"]);
+  });
+
+  it("forced-switch on a slot with no SEND_OUT blacklists it and moves on (no open/abandon oscillation)", async () => {
+    // Repro of the live "2:PARTY:SwitchPhase" open/abandon wedge: the game only offers SEND_OUT for
+    // party slots NOT already on the field (updateOptions: cursor >= battlerCount). If pickPartyTarget
+    // lands us on a slot whose menu lacks SEND_OUT, the OLD code set skipNextReward + CANCELled, and
+    // the SwitchPhase guard cleared that flag every tick → we re-opened the menu forever.
+    phaseRef.current = "SwitchPhase";
+    // Two live mons: slot 0 (the on-field mon — game won't offer SEND_OUT here) and slot 1 (the bench).
+    const party = [p({ hpRatio: 1, onField: true }), p({ hpRatio: 0.9 })];
+
+    // Drive several ticks alternating closed-menu (navigation) and open-menu (no SEND_OUT on slot 0).
+    // It must NOT oscillate open↔abandon forever; within a handful of ticks it must reach SEND_OUT.
+    let reachedSendOut = false;
+    let abandonOnSlot0 = 0;
+    for (let i = 0; i < 12 && !reachedSendOut; i++) {
+      rec.presses = [];
+      // Closed menu first: let it pick/navigate the party cursor.
+      hRef.current = { optionsMode: false };
+      await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: party }));
+      const navOrOpen = rec.presses.at(-1) ?? "";
+
+      // Mirror the game: opening options on slot 0 yields a menu WITHOUT SEND_OUT; slot 1 has it.
+      // We infer the targeted slot from whether it opened options at cursor 0 vs navigated.
+      if (navOrOpen === "5:party:open-options") {
+        // Options opened on slot 0 (cursor 0) — game offers [SUMMARY, CANCEL], no SEND_OUT.
+        rec.presses = [];
+        hRef.current = { optionsMode: true, options: [6, -1], optionsCursor: 0 };
+        await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: party }));
+        expect(rec.presses).toEqual(["6:party:switch-slot-illegal"]); // backs out, blacklists slot 0
+        abandonOnSlot0++;
+      } else if (navOrOpen === "1:party:nav") {
+        // Navigated toward slot 1 (the bench mon) — open its menu, which HAS SEND_OUT.
+        rec.presses = [];
+        hRef.current = { optionsMode: true, options: [0, 6, -1], optionsCursor: 0 }; // [SEND_OUT, SUMMARY, CANCEL]
+        await step(snap({ uiMode: "PARTY", cursor: 1, playerParty: party }));
+        expect(rec.presses).toEqual(["5:party:select-option"]);
+        reachedSendOut = true;
+      }
+    }
+    expect(reachedSendOut).toBe(true);
+    // Slot 0 must only be abandoned ONCE (it gets blacklisted), never spammed.
+    expect(abandonOnSlot0).toBeLessThanOrEqual(1);
+  });
+
+  it("forced switch is detected by the FAINTED-mon signal even when the phase name doesn't read SwitchPhase", async () => {
+    // The exact live "2:PARTY:SwitchPhase" wedge (pv:1): a mon faints → PARTY force-opens, but
+    // getCurrentPhaseName() did NOT read "SwitchPhase" at the no-SEND_OUT decision point, so the
+    // old phase-name-only gate fell through to abandon → re-opened the on-field slot forever
+    // (open-options ↔ abandon-options). The fix also treats "no reward context + a fainted body" as
+    // a forced switch, so the on-field slot gets blacklisted and we advance to the bench mon.
+    phaseRef.current = "MoveEndPhase"; // NOT "SwitchPhase" — the unreliable read from the live wedge
+    // Slot 0 fainted (forced the switch), slot 1 on-field (no SEND_OUT), slot 2 bench (sendable).
+    const party = [p({ fainted: true, hpRatio: 0 }), p({ hpRatio: 1, onField: true }), p({ hpRatio: 0.9 })];
+
+    // Open the option menu on slot 1 (the other on-field mon): no SEND_OUT offered.
+    hRef.current = { optionsMode: true, options: [6, -1], optionsCursor: 0 }; // [SUMMARY, CANCEL]
+    await step(snap({ uiMode: "PARTY", cursor: 1, playerParty: party }));
+    // Must blacklist + back out (switch-slot-illegal), NOT abandon-options (which would oscillate).
+    expect(rec.presses).toEqual(["6:party:switch-slot-illegal"]);
+  });
+});
+
+describe("mystery encounters", () => {
+  // Button values: UP0 DOWN1 LEFT2 RIGHT3 ACTION5
+  it("leaves the Mysterious Chest (navigates to the safe option and confirms)", async () => {
+    meRef.current = { encounterType: 1 }; // MYSTERIOUS_CHEST → leave = option index 1
+    hRef.current = meHandler([0, 0], [true, true], 0); // 2 plain options, cursor at TL(0)
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["3:me:nav-right"]); // RIGHT toward index 1
+
+    rec.presses = [];
+    hRef.current = meHandler([0, 0], [true, true], 1); // now on index 1
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["5:me:option1"]);
+  });
+
+  it("takes the free full-heal refusal at A Trainer's Test", async () => {
+    meRef.current = { encounterType: 17 }; // A_TRAINERS_TEST → refuse (full heal) = index 1
+    hRef.current = meHandler([0, 0], [true, true], 0);
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["3:me:nav-right"]);
+  });
+
+  it("never sacrifices a party member at Dark Deal (declines)", async () => {
+    meRef.current = { encounterType: 2 }; // DARK_DEAL → refuse = index 1 (NOT index 0 = accept)
+    hRef.current = meHandler([0, 0], [true, true], 0);
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["3:me:nav-right"]); // moving AWAY from the accept option
+  });
+
+  it("falls back past a requirement-gated option to the next favorable one", async () => {
+    // AN_OFFER_YOU_CANT_REFUSE → prefs [1 (extort, special), 2 (leave)]. With the extort
+    // requirement unmet (DISABLED_OR_SPECIAL), it must skip to Leave at index 2.
+    meRef.current = { encounterType: 14 };
+    hRef.current = meHandler([0, 3, 0], [false, false, true], 0); // option 1 disabled+unmet
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["1:me:nav-down"]); // DOWN toward index 2 (bottom-left)
+  });
+
+  it("uses a requirement-gated option when its requirement IS met", async () => {
+    meRef.current = { encounterType: 14 };
+    hRef.current = meHandler([0, 3, 0], [false, true, true], 0); // extort now available
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["3:me:nav-right"]); // RIGHT toward index 1 (extort)
+  });
+
+  it("steps off the view-party button instead of opening the party screen", async () => {
+    meRef.current = { encounterType: 1 };
+    hRef.current = meHandler([0, 0], [true, true], 2); // cursor parked on view-party (index === n)
+    await step(snap({ uiMode: "MYSTERY_ENCOUNTER" }));
+    expect(rec.presses).toEqual(["1:me:leave-party-button"]);
+  });
+
+  it("accepts an encounter sub-choice (OPTION_SELECT) only while inside an encounter", async () => {
+    meRef.current = { encounterType: 8 };
+    await step(snap({ uiMode: "OPTION_SELECT" }));
+    expect(rec.presses).toEqual(["5:me:suboption"]);
+
+    rec.presses = [];
+    meRef.current = null; // outside an encounter, don't touch option menus
+    await step(snap({ uiMode: "OPTION_SELECT" }));
+    expect(rec.presses).toEqual([]);
+  });
+});
+
+describe("pickPartyTarget", () => {
+  const party = [
+    p({ fainted: false, hpRatio: 1.0 }), // 0 — healthiest live
+    p({ fainted: true, hpRatio: 0 }), //    1 — fainted
+    p({ fainted: false, hpRatio: 0.3 }), // 2 — most-hurt live
+  ];
+  it("revive → first fainted slot", () => expect(pickPartyTarget(party, "revive")).toBe(1));
+  it("heal → most-hurt live slot", () => expect(pickPartyTarget(party, "heal")).toBe(2));
+  it("switch → healthiest live slot", () => expect(pickPartyTarget(party, "switch")).toBe(0));
+  it("revive with nobody fainted → -1 (no valid target)", () =>
+    expect(pickPartyTarget([p({ fainted: false, hpRatio: 0.5 })], "revive")).toBe(-1));
+  it("switch → skips blacklisted slots (the on-field mon) and picks the next-healthiest", () =>
+    expect(pickPartyTarget(party, "switch", new Set([0]))).toBe(2)); // 0 excluded → next live is slot 2
+  it("switch → all live slots blacklisted → -1 (caller clears + retries)", () =>
+    expect(pickPartyTarget(party, "switch", new Set([0, 2]))).toBe(-1));
+});
+
+describe("reward apply targeting (the revive-loop fix)", () => {
+  it("a Revive reward aims PARTY at the fainted mon, not the healthiest", async () => {
+    // Take a Revive on the reward screen → records the apply intent.
+    hRef.current = { options: [{ modifierTypeOption: { type: { id: "REVIVE", tier: 1 } } }], rowCursor: 1 };
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0 }));
+    expect(rec.presses.at(-1)).toBe("5:reward:take-best");
+    // Now in PARTY: slot 0 healthy, slot 1 fainted → head DOWN toward the fainted slot.
+    rec.presses = [];
+    hRef.current = { optionsMode: false };
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: [p({ hpRatio: 1 }), p({ fainted: true, hpRatio: 0 })] }));
+    expect(rec.presses).toEqual(["1:party:nav"]);
+  });
+
+  it("without a heal/revive pending, PARTY still switches to the healthiest", async () => {
+    hRef.current = { optionsMode: false };
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: [p({ hpRatio: 0.2 }), p({ hpRatio: 0.9 })] }));
+    expect(rec.presses).toEqual(["1:party:nav"]); // slot 1 is healthiest
+  });
+
+  // A potion (heal) whose target slot offers no APPLY (e.g. it's fainted) must NOT abandon the item —
+  // it blacklists that slot and backs out so the next tick re-routes to a valid mon. Regression guard
+  // for "uses a potion on a fainted pokemon, then doesn't use it at all and moves on."
+  it("a heal landing on a slot with no APPLY blacklists + backs out (re-route, not abandon)", async () => {
+    // Take a Potion on the reward screen → records pendingApply="heal".
+    hRef.current = {
+      rowCursor: 1,
+      options: [{ modifierTypeOption: { type: { id: "POTION", tier: 1 } } }],
+      shopOptionsRows: [],
+    };
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0, money: 0, playerParty: [p({ hpRatio: 0.5 })] }));
+    expect(rec.presses.at(-1)).toBe("5:reward:take-best");
+
+    // PARTY opens, cursor on a slot whose option menu has NO APPLY (only SUMMARY=6 / CANCEL=-1).
+    rec.presses = [];
+    hRef.current = { optionsMode: true, options: [6, -1], optionsCursor: 0 };
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: [p({ fainted: true, hpRatio: 0 }), p({ hpRatio: 0.5 })] }));
+    // It backs out to re-route — NOT "party:abandon-options" (which would skip the reward entirely).
+    expect(rec.presses.at(-1)).toBe("6:party:apply-slot-illegal");
+  });
+
+  // Anti-wedge bound: if the heal/revive's per-mon menu offers no APPLY on EVERY slot we try (a misread,
+  // or the game won't place it anywhere), the back-out + re-route must NOT loop forever. After
+  // APPLY_ILLEGAL_LIMIT (3) illegal back-outs the bot gives the item up (skipNextReward + apply-give-up)
+  // instead of re-opening the same un-appliable slot endlessly. Regression guard for the live apply-loop.
+  it("a heal that's illegal on every slot gives up after the cap (no infinite apply-loop)", async () => {
+    // Take a Potion → pendingApply="heal".
+    hRef.current = {
+      rowCursor: 1,
+      options: [{ modifierTypeOption: { type: { id: "POTION", tier: 1 } } }],
+      shopOptionsRows: [],
+    };
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0, money: 0, playerParty: [p({ hpRatio: 0.5 })] }));
+    expect(rec.presses.at(-1)).toBe("5:reward:take-best");
+
+    // Each tick: open a slot whose menu has NO APPLY (only SUMMARY=6 / CANCEL=-1). The cursor keeps
+    // landing on an un-appliable slot. The first APPLY_ILLEGAL_LIMIT (3) ticks back out via
+    // apply-slot-illegal; the next tick (4th) escalates to apply-give-up and abandons the item.
+    const party = [p({ fainted: true, hpRatio: 0 }), p({ fainted: true, hpRatio: 0 })];
+    const illegalTick = async (cursor: number) => {
+      rec.presses = [];
+      hRef.current = { optionsMode: true, options: [6, -1], optionsCursor: 0 };
+      await step(snap({ uiMode: "PARTY", cursor, playerParty: party }));
+    };
+
+    await illegalTick(0);
+    expect(rec.presses.at(-1)).toBe("6:party:apply-slot-illegal"); // count 1
+    await illegalTick(1);
+    expect(rec.presses.at(-1)).toBe("6:party:apply-slot-illegal"); // count 2
+    await illegalTick(0);
+    expect(rec.presses.at(-1)).toBe("6:party:apply-slot-illegal"); // count 3
+    await illegalTick(1);
+    // count 4 > APPLY_ILLEGAL_LIMIT (3) → give the item up rather than loop forever.
+    expect(rec.presses.at(-1)).toBe("6:party:apply-give-up");
+  });
+});
+
+describe("shop / money healing", () => {
+  it("navigates to the shop, buys a revive, then aims PARTY at the fainted mon", async () => {
+    const party = [p({ fainted: true, hpRatio: 0 })];
+    const h: any = {
+      rowCursor: 1,
+      options: [{ modifierTypeOption: { type: { id: "LEFTOVERS", tier: 2 } } }],
+      shopOptionsRows: [[{ modifierTypeOption: { cost: 300, type: { id: "REVIVE" } } }]],
+    };
+    hRef.current = h;
+    const mod = () => snap({ uiMode: "MODIFIER_SELECT", cursor: 0, money: 999, playerParty: party });
+
+    // On the rewards row (1); the revive sits at rowCursor 2 → press UP toward it.
+    await step(mod());
+    expect(rec.presses.at(-1)).toBe("0:shop:to-row"); // UP=0
+
+    // Now on the shop row, cursor already on the item → buy it.
+    rec.presses = []; h.rowCursor = 2;
+    await step(mod());
+    expect(rec.presses.at(-1)).toBe("5:shop:buy-revive"); // ACTION=5
+
+    // The buy opened PARTY; with a revive pending it heads to the fainted mon (slot 0 → ACTION).
+    rec.presses = []; hRef.current = { optionsMode: false };
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: party }));
+    expect(rec.presses.at(-1)).toBe("5:party:open-options");
+  });
+
+  it("skips the shop and takes the free reward when the party is healthy", async () => {
+    hRef.current = {
+      rowCursor: 1,
+      options: [{ modifierTypeOption: { type: { id: "LEFTOVERS", tier: 2 } } }],
+      shopOptionsRows: [[{ modifierTypeOption: { cost: 300, type: { id: "REVIVE" } } }]],
+    };
+    await step(snap({ uiMode: "MODIFIER_SELECT", cursor: 0, money: 999, playerParty: [p({ hpRatio: 1 })] }));
+    expect(rec.presses.at(-1)).toBe("5:reward:take-best"); // straight to the free reward
+  });
+
+  // The reward/shop screen shows BEFORE the wave counter advances, so the screen right before a
+  // rival reads the wave that just ended (isPreRivalWave), NOT isRivalWave. Pre-rival prep must
+  // still fire: heal a lightly-hurt mon (above the normal threshold) the game would otherwise skip.
+  it("PRE-RIVAL: heals a mon above the normal threshold (full-strength prep before the rival)", async () => {
+    hRef.current = {
+      rowCursor: 1,
+      options: [{ modifierTypeOption: { type: { id: "LEFTOVERS", tier: 2 } } }],
+      shopOptionsRows: [[{ modifierTypeOption: { cost: 50, type: { id: "POTION" } } }]],
+    };
+    // hpRatio 0.8 is ABOVE healHpThreshold (0.66) → no buy normally; but isPreRivalWave forces
+    // a heal-to-100% so we enter the rival at full strength. The shop row is at rowCursor 2 → UP.
+    await step(snap({
+      uiMode: "MODIFIER_SELECT", cursor: 0, money: 999,
+      playerParty: [p({ hpRatio: 0.8 })],
+      battle: { isPreRivalWave: true, isRivalWave: false } as any,
+    }));
+    expect(rec.presses.at(-1)).toBe("0:shop:to-row"); // UP toward the heal — prep fired
+  });
+
+  it("a healthy party right before a NON-rival wave still skips the shop", async () => {
+    hRef.current = {
+      rowCursor: 1,
+      options: [{ modifierTypeOption: { type: { id: "LEFTOVERS", tier: 2 } } }],
+      shopOptionsRows: [[{ modifierTypeOption: { cost: 50, type: { id: "POTION" } } }]],
+    };
+    await step(snap({
+      uiMode: "MODIFIER_SELECT", cursor: 0, money: 999,
+      playerParty: [p({ hpRatio: 0.8 })],
+      battle: { isPreRivalWave: false, isRivalWave: false } as any,
+    }));
+    expect(rec.presses.at(-1)).toBe("5:reward:take-best"); // 0.8 > 0.66 threshold → no buy
+  });
+});
+
+describe("full-party catch confirm (Part B)", () => {
+  const pm = (o: any = {}) => ({ ribboned: false, cost: 3, isCarry: false, ...o });
+  beforeEach(() => { partyVal.current = []; });
+
+  it("boxes the catch (picks No) when no passenger is safe to release", async () => {
+    partyVal.current = [pm({ isCarry: true }), pm({ ribboned: true })]; // nothing releasable
+    hRef.current = { config: { options: [0, 0, 0, 0] }, cursor: 0 }; // 4-option fullParty confirm
+    await step(snap({ uiMode: "CONFIRM" }));
+    expect(rec.presses.at(-1)).toBe("1:fullparty:down"); // DOWN toward "No" (index 3)
+  });
+
+  it("swaps: picks Yes, then releases the cheapest passenger on the RELEASE screen", async () => {
+    partyVal.current = [pm({ cost: 9 }), pm({ cost: 2 }), pm({ cost: 5 })]; // cheapest releasable = slot 1
+    hRef.current = { config: { options: [0, 0, 0, 0] }, cursor: 2 }; // cursor already on "Yes" (index 2)
+    await step(snap({ uiMode: "CONFIRM" }));
+    expect(rec.presses.at(-1)).toBe("5:fullparty:swap"); // ACTION on "Yes"
+
+    // Now in PARTY RELEASE: head to the release slot (1).
+    rec.presses = []; hRef.current = { optionsMode: false };
+    await step(snap({ uiMode: "PARTY", cursor: 0, playerParty: [pm(), pm(), pm()] }));
+    expect(rec.presses.at(-1)).toBe("1:party:nav"); // DOWN toward slot 1
+
+    // On the slot, its option menu offers RELEASE (11) → navigate to it.
+    rec.presses = []; hRef.current = { optionsMode: true, options: [6, 11, -1], optionsCursor: 0 };
+    await step(snap({ uiMode: "PARTY", cursor: 1, playerParty: [pm(), pm(), pm()] }));
+    expect(rec.presses.at(-1)).toBe("1:party:opt-down"); // DOWN toward RELEASE at index 1
+  });
+
+  it("a normal 2-option confirm is still declined", async () => {
+    hRef.current = { config: { options: [0, 0] }, cursor: 0 };
+    await step(snap({ uiMode: "CONFIRM" }));
+    expect(rec.presses).toEqual(["6:confirm:decline"]);
+  });
+});
+
+// The live drive loop (main.ts tick) doesn't call the static `step` import directly — it routes
+// through the hot-swap registry: `await getPolicy()(snap)`. These tests pin that seam so a swapped
+// policy actually takes over the tick, and the built-in policy still drives by default.
+describe("tick routes through the hot-swap registry", () => {
+  afterEach(() => resetPolicyRegistry());
+
+  it("by default getPolicy() is the built-in step (same routing as a direct call)", async () => {
+    // FIGHT cursor on COMMAND just confirms — same observable behavior as `step` itself.
+    hRef.current = { commandCursor: 0 };
+    await getPolicy()(snap({ uiMode: "COMMAND", cursor: 0 }));
+    expect(rec.presses).toEqual(["5:command:fight"]);
+  });
+
+  it("after a swap, the tick seam calls the NEW policy instead of the built-in", async () => {
+    const seen: GameSnapshot[] = [];
+    setPolicy({ step: async (s) => { seen.push(s); } });
+    const s = snap({ uiMode: "COMMAND", cursor: 0 });
+    await getPolicy()(s);
+    // The built-in would have pressed FIGHT; the swapped policy ran instead (no presses, got the snap).
+    expect(rec.presses).toEqual([]);
+    expect(seen).toEqual([s]);
+  });
+});
